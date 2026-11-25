@@ -37,8 +37,8 @@ One unit of score, won when the ball leaves the Court through the other side's o
 _Avoid_: Goal
 
 **Observation**:
-The image of the game screen given to the Agent at each step; together with the Reward, it is all the Agent knows about the game.
-_Avoid_: State, frame (when meaning what the Agent sees)
+The image of the Court given to the Agent at each step. The Agent decides from its last four Observations; together with the Reward, they are all it knows about the Game.
+_Avoid_: State, frame (when meaning what the Agent sees), screen
 
 **Reward**:
 The change in score the Agent receives after a step: positive when it wins a Point, negative when it loses one.
