@@ -9,12 +9,16 @@ The learning player. It knows nothing about balls or paddles; it sees only Obser
 _Avoid_: AI, bot, model, network
 
 **Opponent**:
-The non-learning player on the other side of the court, whose play follows fixed rules.
+The non-learning player the Agent plays against, on the other side of the Court. Its rules are the same in every Game, so results stay comparable.
 _Avoid_: CPU, enemy, computer player
 
 **Human**:
 A person who moves a Paddle with the keyboard.
 _Avoid_: User, player, person
+
+**Scripted player**:
+A non-learning player that plays in the Agent's place by hand-written rules, used to measure what can be achieved against the Opponent.
+_Avoid_: Baseline, bot, dummy
 
 ## Court
 
