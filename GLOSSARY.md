@@ -12,6 +12,16 @@ _Avoid_: AI, bot, model, network
 The non-learning player on the other side of the court, whose play follows fixed rules.
 _Avoid_: CPU, enemy, computer player
 
+## Court
+
+**Court**:
+The rectangular playing area, closed by walls along the top and bottom and open at each player's end.
+_Avoid_: Field, board, table, arena
+
+**Paddle**:
+The bar a player moves up and down along its own end of the Court to return the ball.
+_Avoid_: Bat, racket, player (when meaning the bar itself)
+
 ## Play
 
 **Game**:
@@ -19,7 +29,7 @@ One match between the Agent and the Opponent, ending when either side reaches 21
 _Avoid_: Match, round
 
 **Point**:
-One unit of score, won when the other side fails to return the ball.
+One unit of score, won when the ball leaves the Court through the other side's open end.
 _Avoid_: Goal
 
 **Observation**:
