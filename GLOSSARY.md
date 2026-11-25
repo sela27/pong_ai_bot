@@ -40,12 +40,24 @@ _Avoid_: Match, round
 One unit of score, won when the ball leaves the Court through the other side's open end.
 _Avoid_: Goal
 
+**Frame**:
+The smallest tick of game time. The ball and the Paddles move once every Frame.
+_Avoid_: Tick
+
+**Action**:
+One of the three choices of a player in the Agent's place: move its Paddle up, move it down, or keep it still.
+_Avoid_: Move, command, key
+
+**Step**:
+One decision of the Agent or a Scripted player: it chooses an Action, the Action is held for a fixed number of Frames, and then it receives the next Observation and the Reward.
+_Avoid_: Turn, tick, frame
+
 **Observation**:
-The image of the Court given to the Agent at each step. The Agent decides from its last four Observations; together with the Reward, they are all it knows about the Game.
+The image of the Court given to the Agent at each Step. The Agent decides from its last four Observations; together with the Reward, they are all it knows about the Game.
 _Avoid_: State, frame (when meaning what the Agent sees), screen
 
 **Reward**:
-The change in score the Agent receives after a step: positive when it wins a Point, negative when it loses one.
+The change in score the Agent receives after a Step: positive when it wins a Point, negative when it loses one.
 _Avoid_: Score (when meaning the per-step signal)
 
 ## Measuring
@@ -55,5 +67,5 @@ The Agent's Points minus the Opponent's Points at the end of a Game, from -21 to
 _Avoid_: Result, win rate
 
 **Evaluation**:
-A set of 100 Games in which the Agent plays its best known move every step, with no random exploration, used to judge how well it plays.
+A set of 100 Games in which the Agent chooses its best known Action every Step, with no random exploration, used to judge how well it plays.
 _Avoid_: Test run, benchmark
