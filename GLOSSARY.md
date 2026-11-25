@@ -12,6 +12,10 @@ _Avoid_: AI, bot, model, network
 The non-learning player on the other side of the court, whose play follows fixed rules.
 _Avoid_: CPU, enemy, computer player
 
+**Human**:
+A person who moves a Paddle with the keyboard.
+_Avoid_: User, player, person
+
 ## Court
 
 **Court**:
@@ -25,7 +29,7 @@ _Avoid_: Bat, racket, player (when meaning the bar itself)
 ## Play
 
 **Game**:
-One match between the Agent and the Opponent, ending when either side reaches 21 Points.
+One match between two players, one on each side of the Court, ending when either side reaches 21 Points.
 _Avoid_: Match, round
 
 **Point**:
