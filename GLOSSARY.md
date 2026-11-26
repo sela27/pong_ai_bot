@@ -20,6 +20,10 @@ _Avoid_: User, player, person
 A non-learning player that plays in the Agent's place by hand-written rules, used to measure what can be achieved against the Opponent.
 _Avoid_: Baseline, bot, dummy
 
+**Position learner**:
+A learning player used only during development. It plays in the Agent's place, but learns from the positions of the ball and the Paddles instead of from Observations.
+_Avoid_: Agent (when meaning it), state agent, cheat agent
+
 ## Court
 
 **Court**:
@@ -63,9 +67,9 @@ _Avoid_: Score (when meaning the per-step signal)
 ## Measuring
 
 **Score margin**:
-The Agent's Points minus the Opponent's Points at the end of a Game, from -21 to +21.
+The Points of the player in the Agent's place minus the Opponent's Points at the end of a Game, from -21 to +21.
 _Avoid_: Result, win rate
 
 **Evaluation**:
-A set of 100 Games in which the Agent chooses its best known Action every Step, with no random exploration, used to judge how well it plays.
+A set of 100 Games against the Opponent, used to judge how well the player in the Agent's place plays. A learning player chooses its best known Action every Step, with no random exploration.
 _Avoid_: Test run, benchmark
