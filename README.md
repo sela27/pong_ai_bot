@@ -59,6 +59,16 @@ uv run pong measure-env
 
 כמה Step-ים בשנייה הסביבה עושה: סביבה אחת, ‏Action-ים אקראיים, עם ה-Opponent ועם ציור ה-Observation. השער הוא 5,000 לפחות ([#14](https://github.com/sela27/pong_ai_bot/issues/14)), ומתחתיו הפקודה נכשלת. זה סקריפט ולא בדיקה, כי המהירות תלויה במחשב.
 
+```
+uv run pong evaluate --scripted random
+```
+
+‏Evaluation של Scripted player: ‏Game אחד נגד ה-Opponent לכל אחד מ-100 ה-seed-ים של הסט הרגיל, ובסוף שורת סיכום ([#13](https://github.com/sela27/pong_ai_bot/issues/13)). עם `--output FILE` הפקודה גם מוסיפה לסוף הקובץ את השורה של ה-Evaluation, בפורמט של `evaluations.jsonl` ב-Run, עם התוצאה של כל seed. אין בה אפשרות לסט ה-Confirmation, כי אליו מגיעים רק בסוף Run ([#16](https://github.com/sela27/pong_ai_bot/issues/16)).
+
+ה-Scripted player-ים:
+
+- `random`: ‏Action אקראית בכל Step, עם seed קבוע.
+
 ## רשימות בדיקה
 
 - [בדיקת החלון בעין](docs/checklists/window.md): אחרי כל שינוי בחלון.
