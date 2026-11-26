@@ -70,6 +70,10 @@ _Avoid_: Score (when meaning the per-step signal)
 One training of a learning player from scratch, with one set of settings and one seed. Stopping it and resuming it later continues the same Run.
 _Avoid_: Experiment, session, job
 
+**Budget**:
+The most Steps a Run may take before it ends, whether or not it has reached its goal. Steps played in Evaluations don't count toward it.
+_Avoid_: Max steps, total timesteps, limit
+
 **Milestone**:
 A copy of a learning player saved at a fixed interval during a Run and kept for good, so it can be evaluated and watched later.
 _Avoid_: Checkpoint, snapshot, version
