@@ -13,6 +13,10 @@
 - One branch per piece of work (a ticket, a bug fix), merged into `main` locally, without a PR ([#11](https://github.com/sela27/pong_ai_bot/issues/11)).
 - A change that makes `README.md` or `CLAUDE.md` wrong updates them in the same branch. Both link to the issue that made a decision instead of copying it ([#16](https://github.com/sela27/pong_ai_bot/issues/16)).
 
+## The window
+
+- An agent can't see the window, and it isn't built test-first. After any change to the window, ask the developer to go through [`docs/checklists/window.md`](docs/checklists/window.md), and don't call the work done before they have ([#16](https://github.com/sela27/pong_ai_bot/issues/16)).
+
 ## Working with the developer
 
 Set in [#16](https://github.com/sela27/pong_ai_bot/issues/16).
