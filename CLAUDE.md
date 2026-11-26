@@ -1,5 +1,11 @@
 # CLAUDE.md
 
+## Verification
+
+- The pre-commit hook, `.githooks/pre-commit`, runs `ruff format --check`, `ruff check`, `mypy` and the fast tests through `uv run`. Enable it with `git config core.hooksPath .githooks`, and run it by hand with `sh .githooks/pre-commit`.
+- Fast tests: `uv run pytest`. They are the default, and the hook runs them.
+- Slow tests: `uv run pytest -m slow`. The hook never runs them.
+
 ## Agent skills
 
 ### Issue tracker
