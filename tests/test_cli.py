@@ -68,6 +68,17 @@ def test_pong_evaluate_offers_the_copy_of_the_opponent(
     assert "opponent-copy" in capsys.readouterr().out
 
 
+def test_pong_evaluate_offers_the_edge_predictor(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Only its help, in-process: its 100 Games take far longer than the hook allows.
+    with pytest.raises(SystemExit) as exit_:
+        main(["evaluate", "--help"])
+
+    assert exit_.value.code == 0
+    assert "edge-predictor" in capsys.readouterr().out
+
+
 def test_pong_evaluate_offers_no_confirmation_set() -> None:
     # Only the end of a Run plays the Confirmation's set (issue #16).
     result = run_pong("evaluate", "--help")

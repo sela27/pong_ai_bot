@@ -69,6 +69,7 @@ uv run pong evaluate --scripted random
 
 - `random`: ‏Action אקראית בכל Step, עם seed קבוע.
 - `opponent-copy`: אותו כלל עוקב של ה-Opponent, בצד ימין, כדי לבדוק שהמשחק סימטרי. בכל Step הוא בוחר את ה-Action שמסיימת את ה-Step הכי קרוב למקום שהכלל היה מביא אליו את ה-Paddle.
+- `edge-predictor`: מחשב לאן הכדור יגיע, כולל קפיצה מקיר, ומחזיר אותו מקצה ה-Paddle ב-45 מעלות, לצד הרחוק מה-Paddle של ה-Opponent. כשהכדור מתרחק, הוא חוזר למרכז. מחליט כל Step, כמו ה-Agent ([#7](https://github.com/sela27/pong_ai_bot/issues/7)).
 
 ## רשימות בדיקה
 
