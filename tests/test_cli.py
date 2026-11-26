@@ -57,14 +57,25 @@ def test_pong_evaluate_prints_the_summary_line_and_adds_the_json_line_to_a_file(
     assert [game["seed"] for game in line["games"]] == list(range(1_000_000, 1_000_100))
 
 
+def test_pong_evaluate_offers_the_copy_of_the_opponent(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Only its help, in-process: its 100 Games are evenly matched, and long.
+    with pytest.raises(SystemExit) as exit_:
+        main(["evaluate", "--help"])
+
+    assert exit_.value.code == 0
+    assert "opponent-copy" in capsys.readouterr().out
+
+
 def test_pong_evaluate_offers_the_edge_predictor(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     # Only its help, in-process: its 100 Games take far longer than the hook allows.
-    with pytest.raises(SystemExit) as exit:
+    with pytest.raises(SystemExit) as exit_:
         main(["evaluate", "--help"])
 
-    assert exit.value.code == 0
+    assert exit_.value.code == 0
     assert "edge-predictor" in capsys.readouterr().out
 
 

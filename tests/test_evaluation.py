@@ -111,6 +111,43 @@ def test_all_the_games_still_going_are_played_together_until_each_ends() -> None
     assert player.batches == [[1, 2, 3], [1, 3], [1]]
 
 
+class SeedReading(Staying):
+    """A fake player that keeps still, and keeps the seeds in the `info`s of each
+    batch it is given."""
+
+    def __init__(self) -> None:
+        self.batches: list[list[int]] = []
+
+    def act(
+        self,
+        observations: npt.NDArray[Any],
+        infos: Sequence[dict[str, Any]],
+    ) -> list[int]:
+        self.batches.append([info["seed"] for info in infos])
+        return super().act(observations, infos)
+
+
+def test_each_games_info_comes_with_its_seed_so_a_player_knows_which_game_is_which() -> (
+    None
+):
+    # A player that keeps something for each Game, as the copy of the Opponent does,
+    # needs to know which Games left the batch.
+    player = SeedReading()
+    make_env = ending_as(
+        {
+            7: Ending(2, Score(left=21, right=0)),
+            8: Ending(1, Score(left=21, right=0)),
+            9: Ending(3, Score(left=21, right=0)),
+        }
+    )
+
+    evaluation = evaluate(player, make_env, [7, 8, 9])
+
+    assert player.batches == [[7, 8, 9], [7, 9], [9]]
+    # The score is still read from the environment's own `info`.
+    assert [game.score_margin for game in evaluation.games] == [-21, -21, -21]
+
+
 class TallyEnv(gym.Env[np.int64, int]):
     """A fake environment whose Game with seed n ends after n Steps, at a score
     that tallies the Actions it was given: a Point on the right for each up, and one

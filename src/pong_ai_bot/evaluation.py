@@ -37,9 +37,11 @@ class Player(Protocol):
         """The Actions for a batch of Games, one for each, in the batch's order.
 
         `observations` holds each Game's Observation from its environment, stacked
-        along a new first axis, and `infos` each Game's `info`. The Agent reads only
-        the Observations, and the Scripted players only the `info`s. The Actions
-        may be a list or a NumPy array.
+        along a new first axis, and `infos` each Game's `info`, with the seed of
+        the Game added under `seed`: a player that keeps something for each Game
+        knows by it which Game is which, as Games leave the batch. The Agent reads
+        only the Observations, and the Scripted players only the `info`s. The
+        Actions may be a list or a NumPy array.
         """
         ...
 
@@ -159,7 +161,7 @@ def evaluate(player: Player, make_env: EnvMaker, seeds: Iterable[int]) -> Evalua
     while going:
         actions = player.act(
             np.stack([observations[game] for game in going]),
-            [infos[game] for game in going],
+            [{**infos[game], "seed": seeds[game]} for game in going],
         )
         still_going = []
         for game, action in zip(going, np.asarray(actions), strict=True):
