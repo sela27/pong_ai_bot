@@ -68,6 +68,7 @@ uv run pong evaluate --scripted random
 ה-Scripted player-ים:
 
 - `random`: ‏Action אקראית בכל Step, עם seed קבוע.
+- `opponent-copy`: אותו כלל עוקב של ה-Opponent, בצד ימין, כדי לבדוק שהמשחק סימטרי. בכל Step הוא בוחר את ה-Action שמסיימת את ה-Step הכי קרוב למקום שהכלל היה מביא אליו את ה-Paddle.
 
 ## רשימות בדיקה
 
