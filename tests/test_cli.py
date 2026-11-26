@@ -79,6 +79,16 @@ def test_pong_evaluate_offers_the_edge_predictor(
     assert "edge-predictor" in capsys.readouterr().out
 
 
+def test_pong_has_a_choose_width_command(capsys: pytest.CaptureFixture[str]) -> None:
+    # Only its help, in-process: choosing is a script, not a test, and its 15
+    # Evaluations take minutes.
+    with pytest.raises(SystemExit) as exit_:
+        main(["choose-width", "--help"])
+
+    assert exit_.value.code == 0
+    assert capsys.readouterr().out.startswith("usage: pong choose-width")
+
+
 def test_pong_evaluate_offers_no_confirmation_set() -> None:
     # Only the end of a Run plays the Confirmation's set (issue #16).
     result = run_pong("evaluate", "--help")
