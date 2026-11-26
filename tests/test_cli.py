@@ -6,6 +6,10 @@ import subprocess
 import sysconfig
 from pathlib import Path
 
+import pytest
+
+from pong_ai_bot.cli import main
+
 
 def run_pong(*args: str) -> subprocess.CompletedProcess[str]:
     pong = shutil.which("pong", path=sysconfig.get_path("scripts"))
@@ -51,6 +55,17 @@ def test_pong_evaluate_prints_the_summary_line_and_adds_the_json_line_to_a_file(
     assert line["step"] is None
     assert line["set"] == "regular"
     assert [game["seed"] for game in line["games"]] == list(range(1_000_000, 1_000_100))
+
+
+def test_pong_evaluate_offers_the_edge_predictor(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Only its help, in-process: its 100 Games take far longer than the hook allows.
+    with pytest.raises(SystemExit) as exit:
+        main(["evaluate", "--help"])
+
+    assert exit.value.code == 0
+    assert "edge-predictor" in capsys.readouterr().out
 
 
 def test_pong_evaluate_offers_no_confirmation_set() -> None:
