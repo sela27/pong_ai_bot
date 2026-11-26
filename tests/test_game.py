@@ -1,4 +1,4 @@
-"""The Game core, Frame by Frame, from exact physics states.
+"""The Game core, Frame by Frame, from exact physics states and from seeds.
 
 Positions are in Court units: x from the left end (0) to the right end (1), y from
 the bottom wall (0) to the top wall (1). Expected numbers are worked out by hand.
@@ -6,10 +6,12 @@ the bottom wall (0) to the top wall (1). Expected numbers are worked out by hand
 
 import dataclasses
 import itertools
+import math
+import random
 
 import pytest
 
-from pong_ai_bot.game import Ball, Game, PhysicsState, Score, Side
+from pong_ai_bot.game import Ball, Game, PhysicsState, Score, Serve, Side
 
 NO_POINTS_YET = Score(left=0, right=0)
 
@@ -19,11 +21,13 @@ def a_game(
     left_paddle: float = 0.5,
     right_paddle: float = 0.5,
     score: Score = NO_POINTS_YET,
+    seed: int = 0,
 ) -> Game:
     return Game(
         PhysicsState(
             ball=ball, left_paddle=left_paddle, right_paddle=right_paddle, score=score
-        )
+        ),
+        seed=seed,
     )
 
 
@@ -35,7 +39,7 @@ def test_a_game_starts_from_the_exact_state_it_is_given() -> None:
         score=Score(left=4, right=9),
     )
 
-    game = Game(state)
+    game = Game(state, seed=0)
 
     assert game.state == PhysicsState(
         ball=Ball(x=0.4, y=0.7, vx=-0.0135, vy=0.006),
@@ -467,3 +471,281 @@ def test_even_at_the_top_speed_the_ball_does_not_skip_through_a_paddle(
         assert game.state.ball.x <= 0.905 + 1e-9, f"x={game.state.ball.x}"
 
     assert game.state.ball.vx == pytest.approx(-TOP_SPEED)
+
+
+def test_a_new_game_starts_with_everything_in_the_center_and_a_serve_to_come() -> None:
+    game = Game.new(seed=1)
+
+    assert game.state == PhysicsState(
+        ball=Ball(x=0.5, y=0.5, vx=0.0, vy=0.0),
+        left_paddle=0.5,
+        right_paddle=0.5,
+        score=Score(left=0, right=0),
+        frame=0,
+        serve=Serve(frames_left=30, toward=None),
+    )
+
+
+def test_the_game_counts_its_frames() -> None:
+    game = Game(
+        PhysicsState(
+            ball=Ball(x=0.5, y=0.5, vx=0.0135, vy=0.0),
+            left_paddle=0.5,
+            right_paddle=0.5,
+            score=NO_POINTS_YET,
+            frame=41,
+        ),
+        seed=0,
+    )
+
+    for _ in range(3):
+        game.play_frame(left=0.0, right=0.0)
+
+    assert game.state.frame == 44
+
+
+def test_the_ball_waits_in_the_center_for_30_frames_while_the_paddles_move() -> None:
+    game = Game.new(seed=1)
+
+    for frame in range(1, 31):
+        game.play_frame(left=0.01, right=-0.01)
+        ball = game.state.ball
+        assert (ball.x, ball.y) == (0.5, 0.5), f"Frame {frame}: {ball}"
+    paddles_after_the_wait = (game.state.left_paddle, game.state.right_paddle)
+    game.play_frame(left=0.0, right=0.0)
+
+    assert paddles_after_the_wait == (pytest.approx(0.8), pytest.approx(0.2))
+    assert game.state.ball.x != 0.5, f"{game.state.ball}"
+
+
+def served_ball(game: Game) -> Ball:
+    """Play still Paddles through the 30 Frames of a serve, and return the ball."""
+    for _ in range(30):
+        game.play_frame(left=0.0, right=0.0)
+    return game.state.ball
+
+
+def test_the_first_serve_of_a_game_goes_toward_a_random_side() -> None:
+    # A fair coin over 200 Games lands 100 times either way, give or take about 7,
+    # so the bounds below are more than 4 of those away.
+    serves_to_the_right = sum(
+        served_ball(Game.new(seed=seed)).vx > 0 for seed in range(200)
+    )
+
+    assert 70 <= serves_to_the_right <= 130, f"{serves_to_the_right} of 200"
+
+
+def test_the_serve_angle_is_uniform_between_minus_30_and_30_degrees() -> None:
+    # 1000 serves in six bins of 10 degrees: about 167 in each, give or take about
+    # 12, so the bounds below are more than 4 of those away.
+    angles = []
+    for seed in range(1000):
+        ball = served_ball(Game.new(seed=seed))
+        angles.append(math.degrees(math.atan2(ball.vy, abs(ball.vx))))
+    bins = [sum(low <= a < low + 10 for a in angles) for low in range(-30, 30, 10)]
+
+    assert -30 <= min(angles) and max(angles) <= 30, f"{min(angles)}, {max(angles)}"
+    assert all(117 <= count <= 217 for count in bins), f"bins of 10 degrees: {bins}"
+
+
+# Each ball leaves the Court in the next Frame, past a Paddle that is out of its way.
+LEAVING_PAST_THE_RIGHT_PADDLE = Ball(x=1.0, y=0.5, vx=0.02, vy=0.0)
+LEAVING_PAST_THE_LEFT_PADDLE = Ball(x=0.0, y=0.5, vx=-0.02, vy=0.0)
+
+
+@pytest.mark.parametrize(
+    ("ball", "lost_by"),
+    [
+        pytest.param(LEAVING_PAST_THE_RIGHT_PADDLE, Side.RIGHT, id="right"),
+        pytest.param(LEAVING_PAST_THE_LEFT_PADDLE, Side.LEFT, id="left"),
+    ],
+)
+def test_after_a_point_the_ball_is_served_toward_the_side_that_lost_it(
+    ball: Ball, lost_by: Side
+) -> None:
+    # The Paddles stay where they are: only a new Game puts them in the center.
+    served_toward: set[Side | None] = set()
+    for seed in range(20):
+        game = a_game(ball, left_paddle=0.7, right_paddle=0.2, seed=seed)
+        game.play_frame(left=0.0, right=0.0)
+        after_the_point = game.state
+        served = served_ball(game)
+        served_toward.add(
+            Side.RIGHT if served.vx > 0 else Side.LEFT if served.vx < 0 else None
+        )
+
+        assert after_the_point.ball == Ball(x=0.5, y=0.5, vx=0.0, vy=0.0)
+        assert (game.state.left_paddle, game.state.right_paddle) == (0.7, 0.2)
+        assert (served.x, served.y) == (0.5, 0.5)
+
+    assert served_toward == {lost_by}
+
+
+def test_a_serve_brings_the_crossing_back_to_60_frames() -> None:
+    # The ball leaves past the left Paddle at the top speed, a 30-Frame crossing.
+    game = a_game(Ball(x=0.0, y=0.5, vx=-TOP_SPEED, vy=0.0), left_paddle=0.9)
+    game.play_frame(left=0.0, right=0.0)
+
+    served = served_ball(game)
+
+    assert served.vx == pytest.approx(-BASE_SPEED), f"vx={served.vx}"
+
+
+@pytest.mark.parametrize(
+    ("ball", "score", "final_score"),
+    [
+        pytest.param(
+            LEAVING_PAST_THE_RIGHT_PADDLE,
+            Score(left=20, right=13),
+            Score(left=21, right=13),
+            id="left",
+        ),
+        pytest.param(
+            LEAVING_PAST_THE_LEFT_PADDLE,
+            Score(left=17, right=20),
+            Score(left=17, right=21),
+            id="right",
+        ),
+    ],
+)
+def test_a_game_ends_when_a_side_reaches_21_points(
+    ball: Ball, score: Score, final_score: Score
+) -> None:
+    game = a_game(ball, left_paddle=0.2, right_paddle=0.2, score=score)
+
+    result = game.play_frame(left=0.0, right=0.0)
+
+    assert game.state.score == final_score
+    assert (result.terminated, result.truncated) == (True, False)
+
+
+def test_a_point_short_of_21_does_not_end_the_game() -> None:
+    game = a_game(
+        LEAVING_PAST_THE_LEFT_PADDLE,
+        left_paddle=0.2,
+        score=Score(left=20, right=19),
+    )
+
+    result = game.play_frame(left=0.0, right=0.0)
+
+    assert game.state.score == Score(left=20, right=20)
+    assert (result.terminated, result.truncated) == (False, False)
+
+
+def test_a_game_is_cut_off_after_108000_frames_with_no_extra_point() -> None:
+    game = Game(
+        PhysicsState(
+            ball=Ball(x=0.5, y=0.5, vx=BASE_SPEED, vy=0.0),
+            left_paddle=0.5,
+            right_paddle=0.5,
+            score=Score(left=12, right=9),
+            frame=107_998,
+        ),
+        seed=0,
+    )
+
+    results = [game.play_frame(left=0.0, right=0.0) for _ in range(2)]
+
+    assert [(r.terminated, r.truncated) for r in results] == [
+        (False, False),
+        (False, True),
+    ]
+    assert results[-1].point_won_by is None
+    assert game.state.score == Score(left=12, right=9)
+
+
+def test_a_game_won_in_its_last_frame_ends_rather_than_being_cut_off() -> None:
+    game = Game(
+        PhysicsState(
+            ball=LEAVING_PAST_THE_LEFT_PADDLE,
+            left_paddle=0.2,
+            right_paddle=0.5,
+            score=Score(left=4, right=20),
+            frame=107_999,
+        ),
+        seed=0,
+    )
+
+    result = game.play_frame(left=0.0, right=0.0)
+
+    assert game.state.score == Score(left=4, right=21)
+    assert (result.terminated, result.truncated) == (True, False)
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        pytest.param(
+            PhysicsState(
+                ball=Ball(x=0.5, y=0.5, vx=0.0, vy=0.0),
+                left_paddle=0.5,
+                right_paddle=0.5,
+                score=Score(left=21, right=18),
+                serve=Serve(frames_left=30, toward=Side.LEFT),
+            ),
+            id="won",
+        ),
+        pytest.param(
+            PhysicsState(
+                ball=Ball(x=0.5, y=0.5, vx=BASE_SPEED, vy=0.0),
+                left_paddle=0.5,
+                right_paddle=0.5,
+                score=Score(left=12, right=9),
+                frame=108_000,
+            ),
+            id="cut off",
+        ),
+    ],
+)
+def test_a_game_that_is_over_plays_no_more_frames(state: PhysicsState) -> None:
+    game = Game(state, seed=0)
+
+    with pytest.raises(RuntimeError, match="over"):
+        game.play_frame(left=0.0, right=0.0)
+    assert game.state == state
+
+
+def test_a_game_hands_out_one_generator_seeded_by_its_seed() -> None:
+    # The Opponent draws from it, so a Game's randomness all comes from its seed.
+    first_draws = [Game.new(seed=seed).rng.random() for seed in (3, 3, 4)]
+
+    assert first_draws[0] == first_draws[1] != first_draws[2], f"{first_draws}"
+
+
+def test_the_handed_out_generator_is_the_one_the_game_serves_with() -> None:
+    untouched = Game.new(seed=3)
+    drawn_from = Game.new(seed=3)
+    drawn_from.rng.random()
+
+    assert served_ball(untouched) != served_ball(drawn_from)
+
+
+def frame_by_frame(seed: int, moves: list[tuple[float, float]]) -> list[PhysicsState]:
+    """The state after each Frame of a new Game, with the given Paddle moves, until
+    the moves run out or the Game ends."""
+    game = Game.new(seed=seed)
+    states = []
+    for left, right in moves:
+        result = game.play_frame(left=left, right=right)
+        states.append(game.state)
+        if result.terminated or result.truncated:
+            break
+    return states
+
+
+def test_the_same_seed_and_the_same_moves_give_the_same_game_frame_by_frame() -> None:
+    # Paddles moving at random let a Point go by every 80 Frames or so, serve
+    # included, so this takes in many serves, and maybe the end of the Game.
+    moves_from = random.Random(99)
+    moves = [
+        (moves_from.uniform(-0.02, 0.02), moves_from.uniform(-0.02, 0.02))
+        for _ in range(3000)
+    ]
+
+    game = frame_by_frame(7, moves)
+    same_seed = frame_by_frame(7, moves)
+    other_seed = frame_by_frame(8, moves)
+
+    assert game[-1].score.left + game[-1].score.right >= 10, f"{game[-1].score}"
+    assert same_seed == game
+    assert other_seed != game
