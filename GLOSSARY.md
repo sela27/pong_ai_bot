@@ -37,7 +37,7 @@ _Avoid_: Bat, racket, player (when meaning the bar itself)
 ## Play
 
 **Game**:
-One match between two players, one on each side of the Court, ending when either side reaches 21 Points.
+One match between two players, one on each side of the Court, ending when either side reaches 21 Points, or cut off after a fixed length of game time.
 _Avoid_: Match, round
 
 **Point**:
@@ -70,6 +70,10 @@ _Avoid_: Score (when meaning the per-step signal)
 One training of a learning player from scratch, with one set of settings and one seed. Stopping it and resuming it later continues the same Run.
 _Avoid_: Experiment, session, job
 
+**Milestone**:
+A copy of a learning player saved at a fixed interval during a Run and kept for good, so it can be evaluated and watched later.
+_Avoid_: Checkpoint, snapshot, version
+
 ## Measuring
 
 **Score margin**:
@@ -79,3 +83,7 @@ _Avoid_: Result, win rate
 **Evaluation**:
 A set of 100 Games against the Opponent, used to judge how well the player in the Agent's place plays. A learning player chooses its best known Action every Step, with no random exploration.
 _Avoid_: Test run, benchmark
+
+**Confirmation**:
+A second Evaluation, on Games never used to choose it, of the one Milestone chosen as a Run's best. Its result alone is the Run's result.
+_Avoid_: Test set, final evaluation
