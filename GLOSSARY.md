@@ -64,6 +64,12 @@ _Avoid_: State, frame (when meaning what the Agent sees), screen
 The change in score the Agent receives after a Step: positive when it wins a Point, negative when it loses one.
 _Avoid_: Score (when meaning the per-step signal)
 
+## Training
+
+**Run**:
+One training of a learning player from scratch, with one set of settings and one seed. Stopping it and resuming it later continues the same Run.
+_Avoid_: Experiment, session, job
+
 ## Measuring
 
 **Score margin**:
