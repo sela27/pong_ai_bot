@@ -5,8 +5,9 @@ import secrets
 from pathlib import Path
 
 from pong_ai_bot.environment import PongEnv
-from pong_ai_bot.evaluation import SeedSet, evaluate
-from pong_ai_bot.scripted_players import SCRIPTED_PLAYERS
+from pong_ai_bot.evaluation import Evaluation, SeedSet
+from pong_ai_bot.scripted_players import SCRIPTED_PLAYERS, evaluate_scripted_player
+from pong_ai_bot.width_choice import choose_width
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -58,6 +59,15 @@ def main(argv: list[str] | None = None) -> int:
             "to the end of FILE"
         ),
     )
+    commands.add_parser(
+        "choose-width",
+        help="choose the Opponent's offset width, by the Scripted players",
+        description=(
+            "Evaluate each Scripted player on the regular set against an Opponent "
+            "of each offset width tried, print a table of their means, and choose "
+            "the width by the rule of issue #7. Fails if no width passes."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.command == "play":
@@ -69,6 +79,8 @@ def main(argv: list[str] | None = None) -> int:
         return _measure_env()
     elif args.command == "evaluate":
         _evaluate(args.scripted, output=args.output)
+    elif args.command == "choose-width":
+        return _choose_width()
     return 0
 
 
@@ -95,10 +107,22 @@ def _measure_env() -> int:
 
 
 def _evaluate(scripted: str, *, output: Path | None) -> None:
-    # Never the Confirmation's set: it is played only at the end of a Run (issue #16).
-    seed_set = SeedSet.REGULAR
-    evaluation = evaluate(SCRIPTED_PLAYERS[scripted](), PongEnv, seed_set.seeds)
-    print(evaluation.summary_line(seed_set=seed_set))
+    evaluation = evaluate_scripted_player(scripted)
+    print(evaluation.summary_line(seed_set=SeedSet.REGULAR))
     if output is not None:
         with output.open("a", encoding="utf-8") as file:
-            file.write(evaluation.json_line(seed_set=seed_set) + "\n")
+            file.write(evaluation.json_line(seed_set=SeedSet.REGULAR) + "\n")
+
+
+def _choose_width() -> int:
+    def evaluate_at(name: str, width: float) -> Evaluation:
+        evaluation = evaluate_scripted_player(name, width=width)
+        # Each Evaluation as it ends, since all of them take minutes.
+        summary = evaluation.summary_line(seed_set=SeedSet.REGULAR)
+        print(f"{name} at {width:.0%}: {summary}", flush=True)
+        return evaluation
+
+    choice = choose_width(evaluate_at)
+    print()
+    print(choice.report())
+    return 0 if choice.chosen is not None else 1

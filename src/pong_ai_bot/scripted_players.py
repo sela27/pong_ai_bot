@@ -7,14 +7,15 @@ Observation.
 """
 
 import dataclasses
+import functools
 from collections.abc import Callable, Iterator, Sequence
 from typing import Any
 
 import numpy as np
 import numpy.typing as npt
 
-from pong_ai_bot.environment import FRAMES_PER_STEP, Action
-from pong_ai_bot.evaluation import Player
+from pong_ai_bot.environment import FRAMES_PER_STEP, Action, PongEnv
+from pong_ai_bot.evaluation import Evaluation, Player, SeedSet, evaluate
 from pong_ai_bot.game import (
     BALL_SIZE,
     MAX_PADDLE_MOVE,
@@ -220,10 +221,30 @@ def _clamp_paddle(height: float) -> float:
     return min(max(height, _PADDLE_LOWEST), _PADDLE_HIGHEST)
 
 
-SCRIPTED_PLAYERS: dict[str, Callable[[], Player]] = {
-    "random": RandomPlayer,
-    "opponent-copy": OpponentCopy,
-    "edge-predictor": EdgePredictor,
+SCRIPTED_PLAYERS: dict[str, Callable[[float], Player]] = {
+    "random": lambda width: RandomPlayer(),
+    "opponent-copy": lambda width: OpponentCopy(width=width),
+    "edge-predictor": lambda width: EdgePredictor(),
 }
 """Each Scripted player, by the name `pong evaluate` knows it by, with the function
-that makes a new one for an Evaluation. A new Scripted player is one more line."""
+that makes a new one for an Evaluation against an Opponent of the offset width it
+is given: the copy of the Opponent plays by that width too. A new Scripted player
+is one more line."""
+
+
+def evaluate_scripted_player(
+    name: str, *, width: float = DEFAULT_OFFSET_WIDTH
+) -> Evaluation:
+    """The Evaluation of the Scripted player `name` against an Opponent of the
+    offset width `width`, on the regular set.
+
+    Never on the Confirmation's set: it is played only at the end of a Run
+    (issue #16).
+    """
+    return evaluate(
+        SCRIPTED_PLAYERS[name](width),
+        functools.partial(
+            PongEnv, left_player=functools.partial(Opponent, width=width)
+        ),
+        SeedSet.REGULAR.seeds,
+    )
