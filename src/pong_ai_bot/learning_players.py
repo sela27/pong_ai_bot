@@ -50,17 +50,23 @@ class LearningPlayer:
 
 
 def _test_environment_player(
-    make_env: Callable[[], gym.Env[Any, Any]], *, actions: int
+    make_test_env: Callable[[], gym.Env[Any, Any]], *, actions: int
 ) -> LearningPlayer:
-    """The player of a test environment: its input is one number, a stack of one
-    Observation, and its network is tiny."""
+    """The player of a test environment: its input is a stack of one Observation,
+    one number, by the same wrapper as the Position learner's stack of four, and
+    its network is tiny."""
+
+    def make_env() -> gym.Env[Any, Any]:
+        return ObservationStack(make_test_env(), length=1)
 
     def make_network() -> nn.Module:
         # Only here: PyTorch takes seconds to import, and `pong`'s other commands
         # don't need it.
         from torch import nn
 
-        return nn.Sequential(nn.Linear(1, 16), nn.ReLU(), nn.Linear(16, actions))
+        return nn.Sequential(
+            nn.Flatten(), nn.Linear(1, 16), nn.ReLU(), nn.Linear(16, actions)
+        )
 
     return LearningPlayer(
         make_env=make_env,
