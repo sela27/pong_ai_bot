@@ -215,6 +215,11 @@ def _shown(default: object) -> str:
     return str(default)
 
 
+_STOPPED_BY_CTRL_C = 130
+"""`pong train`'s exit code when Ctrl+C stopped the Run, as is usual for a program
+stopped by Ctrl+C: 128 and SIGINT's number, 2."""
+
+
 def _train(args: argparse.Namespace) -> int:
     # Only here: PyTorch takes seconds to import, and the other commands don't
     # need it.
@@ -261,6 +266,23 @@ def _train(args: argparse.Namespace) -> int:
         settings=LearnerSettings.of_run(settings),
         seed=args.seed,
     )
-    train_run(run, player.make_env(), learner, stay_awake=keep_windows_awake)
+    print(
+        "Ctrl+C stops the Run once its Step is over, with a full checkpoint; a "
+        "second Ctrl+C stops it at once, without one.",
+        flush=True,
+    )
+    try:
+        stopped_at = train_run(
+            run, player.make_env(), learner, stay_awake=keep_windows_awake
+        )
+    except KeyboardInterrupt:
+        print("Stopped at once, with no checkpoint of the Step.", file=sys.stderr)
+        return _STOPPED_BY_CTRL_C
+    if stopped_at < settings.budget:
+        print(
+            f"Ctrl+C stopped the Run at Step {stopped_at:,}, with a full checkpoint "
+            "there."
+        )
+        return _STOPPED_BY_CTRL_C
     print(f"The Run reached its Budget, {settings.budget:,} Steps.")
     return 0
