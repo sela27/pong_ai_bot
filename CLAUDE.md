@@ -13,6 +13,17 @@
 - One branch per piece of work (a ticket, a bug fix), merged into `main` locally, without a PR ([#11](https://github.com/sela27/pong_ai_bot/issues/11)).
 - A change that makes `README.md` or `CLAUDE.md` wrong updates them in the same branch. Both link to the issue that made a decision instead of copying it ([#16](https://github.com/sela27/pong_ai_bot/issues/16)).
 
+## Runs
+
+Set in [#16](https://github.com/sela27/pong_ai_bot/issues/16). A real Run, of the Position learner or the Agent, trains for hours on the one graphics card, and its result decides what comes next; a test environment's Run takes seconds.
+
+- Runs live outside the repo, in `~/pong_ai_bot_runs/` or the directory `PONG_AI_BOT_RUNS_DIR` names. You only ever read there, and never delete anything there.
+- On your own: everything in [`docs/checklists/before-a-run.md`](docs/checklists/before-a-run.md); tiny Runs of the test environments (`pong train --player test-env-1` to `test-env-4`), with `PONG_AI_BOT_RUNS_DIR` set to a temp directory; and reading a Run's TensorBoard files and `evaluations.jsonl`, to diagnose it line by line against [`docs/checklists/healthy-run.md`](docs/checklists/healthy-run.md).
+- Starting, resuming or stopping a real Run waits for the developer's explicit "yes". Then hand them the exact command to run in their own terminal: a process you start can die with the conversation, hours into the Run. Their terminal is Windows PowerShell 5.1, which passes `~` to `uv` unexpanded, so write a Run's path as `$HOME\pong_ai_bot_runs\...`.
+- The Confirmation set is played once, at the end of its Run; you never evaluate on it by hand ([#14](https://github.com/sela27/pong_ai_bot/issues/14)).
+- After a failed Run, propose a diagnosis and a step up the ladder ([#14](https://github.com/sela27/pong_ai_bot/issues/14)); the developer decides.
+- After a finished Run, once the developer says it's over: read its directory, then, on a branch, add its row to the finished Runs in `healthy-run.md` and correct the graph lines by what it showed.
+
 ## The window
 
 - An agent can't see the window, and it isn't built test-first. After any change to the window, ask the developer to go through [`docs/checklists/window.md`](docs/checklists/window.md), and don't call the work done before they have ([#16](https://github.com/sela27/pong_ai_bot/issues/16)).

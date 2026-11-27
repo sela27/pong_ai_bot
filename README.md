@@ -53,6 +53,48 @@ uv run pong play
 
 ‏Human נגד ה-Opponent, בחלון: אתה מימין, במקום של ה-Agent, ורואה בדיוק את מה שה-Agent רואה. החצים למעלה ולמטה מזיזים את ה-Paddle, רווח עוצר וממשיך, ו-Esc יוצא.
 
+### לאמן
+
+```
+uv run pong train --player test-env-1 --name tiny --seed 1 --device cpu --budget 1000 --fill-steps 100
+```
+
+‏Run חדש של שחקן לומד, מאפס, ולא מהמשקלים של Run אחר. הפקודה יוצרת תיקיית Run חדשה ב-`~/pong_ai_bot_runs/`, או בתיקייה שהמשתנה `PONG_AI_BOT_RUNS_DIR` מציין, וקובץ ההגדרות שבה רושם את השחקן, השם הקצר, ה-seed וכל ההגדרות, ולא משתנה אחר כך. ה-seed קטן ממיליון, ועל seed גדול יותר הפקודה מסרבת ([#13](https://github.com/sela27/pong_ai_bot/issues/13)). כל הגדרה של ה-Run היא אפשרות בשם שלה, למשל `--budget` או `--fill-steps`, ומה שלא משנים נשאר בברירת המחדל מהטבלה ב-[spec](https://github.com/sela27/pong_ai_bot/issues/17). ‏`uv run pong train --help` מראה את כולן.
+
+בהתחלה הפקודה מדפיסה על איזה מכשיר היא רצה, ומסרבת לרוץ על ה-CPU בלי `--device cpu` ([#11](https://github.com/sela27/pong_ai_bot/issues/11)). ה-buffer מתמלא לפני הלמידה, וה-Step-ים של המילוי נספרים ב-Budget ([#14](https://github.com/sela27/pong_ai_bot/issues/14)). ‏checkpoint מלא נכתב כל מספר קבוע של Step-ים, ו-Milestone ב-Step 0, כל מספר קבוע של Step-ים ובסוף ה-Run, שנעצר ב-Budget, או, בשחקן שיש לו Evaluation, קודם. המספרים בשורות "checkpoint מלא" ו-"Milestone" בטבלת ההגדרות ב-[spec](https://github.com/sela27/pong_ai_bot/issues/17). בכל Milestone חוץ מזו של Step 0 נכתב קודם גם checkpoint מלא באותו Step, כדי שהמשך של ה-Run לא ישחק שוב את ה-Step-ים עד Milestone שכבר נכתבה. בזמן שה-Run רץ, Windows לא נרדם ([#10](https://github.com/sela27/pong_ai_bot/issues/10)).
+
+בשחקן שיש לו Evaluation, ה-Run מודד כל Milestone ברגע שהיא נכתבת: ב-Step 0, בכל Milestone ובסוף ה-Run. האימון עוצר, ו-100 ה-Game-ים של הסט הרגיל רצים יחד דרך השחקן החמדן, עם מעבר אחד ברשת בכל Step, על המכשיר של האימון. ה-Step-ים שלו לא נספרים ב-Budget, לא נכנסים ל-buffer ולא משנים את ε ([#13](https://github.com/sela27/pong_ai_bot/issues/13)). כל Evaluation מוסיף שורה ל-`evaluations.jsonl` בתיקיית ה-Run, מדפיס שורת סיכום, וכותב את `eval/mean`, ‏`eval/min` ו-`eval/cut_off` ב-Step של ה-Milestone. לשחקנים של סביבות הבדיקה אין Evaluation, כי אין בהן ניקוד.
+
+בשחקן שיש לו Evaluation, ה-Run נגמר ב-Milestone הראשונה שהממוצע שלה על הסט הרגיל מגיע לסף העצירה בהצלחה, או ב-Budget, מה שבא קודם ([#14](https://github.com/sela27/pong_ai_bot/issues/14)). בסוף, ה-Milestone עם הממוצע הגבוה ביותר על הסט הרגיל, ובשוויון המוקדמת, מקבלת Evaluation אחד על סט ה-Confirmation, וזו התוצאה של ה-Run ([#13](https://github.com/sela27/pong_ai_bot/issues/13)). ה-Confirmation מוסיף ל-`evaluations.jsonl` שורה עם הסט `confirmation`, כותב נקודה אחת ב-`confirmation/mean`, ב-Step של ה-Milestone, ומדפיס שורת סיכום ושורה שאומרת אם הממוצע שלו מגיע לשער ההצלחה, כלומר אם ה-Run הגיע ליעד. הסף והשער בשורות "עצירה בהצלחה" ו-"שער ההצלחה" בטבלת ההגדרות ב-[spec](https://github.com/sela27/pong_ai_bot/issues/17). אם הוא נכשל, ה-Run לא ממשיך, ו-Milestone אחרת לא מקבלת Confirmation. זו הדרך היחידה לסט ה-Confirmation ([#16](https://github.com/sela27/pong_ai_bot/issues/16)).
+
+‏`Ctrl+C` אחד מסיים את ה-Step הנוכחי, כותב checkpoint מלא באותו Step ויוצא, בלי Milestone, כי ה-Run לא נגמר. באמצע Evaluation הוא זונח אותו, והוא לא נרשם: ה-Run נעצר עם checkpoint מלא ב-Step של ה-Milestone, גם ב-Budget, וההמשך מודד אותה קודם. באמצע ה-Confirmation הוא זונח אותו באותה צורה, וההמשך נותן אותו. ‏`Ctrl+C` שני יוצא מיד, בלי checkpoint של ה-Step, ואז ה-checkpoint האחרון הוא זה שנכתב לפניו ([#10](https://github.com/sela27/pong_ai_bot/issues/10)). בשני המקרים קוד היציאה הוא 130, כמו של תוכנית שנעצרה ב-`Ctrl+C`.
+
+השחקנים הם ה-Position learner, ‏`position-learner`, ושל ארבע סביבות הבדיקה, `test-env-1` עד `test-env-4`, כדי ש-Claude, או עוזר קוד אחר, יוכל להריץ Run-ים זעירים בתיקייה זמנית ([#9](https://github.com/sela27/pong_ai_bot/issues/9)). ה-Position learner משחק Pong במקום ה-Agent, עם אותן הגדרות, אבל לומד מהמיקומים של הכדור ושני ה-Paddle-ים בארבעת ה-Step-ים האחרונים, 16 מספרים, ברשת קטנה. יש לו Evaluation, ולסביבות הבדיקה אין. ה-Agent יגיע בשלב 3.
+
+### להמשיך
+
+```
+uv run pong resume $HOME\pong_ai_bot_runs\2026-11-27_1430_test-env-1_tiny_seed1 --device cpu
+```
+
+המשך של Run שנעצר, ב-`Ctrl+C` או בקריסה, כאותו Run ([#10](https://github.com/sela27/pong_ai_bot/issues/10)). הפקודה מקבלת רק את תיקיית ה-Run: ההגדרות נקראות מקובץ ההגדרות שלה, ואי אפשר לשנות אותן. אם הקוד ב-commit אחר מזה שה-Run נוצר בו, מוצגת אזהרה, וה-Run ממשיך. הנתיבים בפקודות כתובים ל-PowerShell, עם `$HOME`, כי PowerShell מעביר `~` ל-`uv` כמו שהוא, ואז התיקייה לא נמצאת.
+
+ה-Run ממשיך מה-checkpoint המלא האחרון, עם Game חדש. מונה ה-Step-ים ממשיך משם, ו-ε איתו, ו-`run/resumes` עולה ב-1. ה-buffer לא נשמר, ולכן buffer חדש מתמלא במדיניות הנוכחית לפני שהלמידה חוזרת, וה-Step-ים של המילוי נספרים ב-Budget ([#14](https://github.com/sela27/pong_ai_bot/issues/14)). מה שנכתב לגרפים אחרי ה-checkpoint נמחק מ-TensorBoard, כדי שהקווים לא יחזרו אחורה. כי יש checkpoint מלא בכל Milestone ובסוף ה-Run, גם קריסה, או `Ctrl+C` שני, אחרי ה-checkpoint הראשון משאירים Run שממשיך, בלי לשחק שוב Step-ים של Milestone שכבר נכתבה ובלי למחוק את הנקודות שלה ב-`eval/*`. ‏Run של סביבת בדיקה שהגיע ל-Budget לא ממשיך, כי אין מה להמשיך. ‏Run שנעצר לפני ה-checkpoint הראשון לא ממשיך: מתחילים Run חדש. על תיקייה שאין בה Run הפקודה מסרבת.
+
+‏Run עם Evaluation שנעצר אחרי שהאימון שלו נגמר, בסף העצירה בהצלחה או ב-Budget, ולפני ה-Confirmation, למשל ב-`Ctrl+C` באמצע ה-Confirmation, לא משחק עוד Step-ים: ההמשך נותן לו רק את ה-Confirmation. ‏Run שקיבל Confirmation מסרב להמשיך, כדי שסט ה-Confirmation לא יהפוך לסט בחירה ([#14](https://github.com/sela27/pong_ai_bot/issues/14)).
+
+לפני ה-Step הראשון של ההמשך, ה-Run מודד כל Milestone שנכתבה ולא נמדדה, למשל כש-`Ctrl+C` זנח את ה-Evaluation שלה. אם עצירה בין ה-checkpoint ל-Milestone של אותו Step השאירה את ה-Milestone לא כתובה, ההמשך כותב אותה מהרשת שב-checkpoint, ומודד אותה.
+
+כמו `pong train`, היא מדפיסה על איזה מכשיר היא רצה ומסרבת לרוץ על ה-CPU בלי `--device cpu`, ‏Windows לא נרדם בזמן שה-Run רץ, ו-`Ctrl+C` עוצר אותו באותה צורה.
+
+### לראות את הגרפים
+
+```
+uv run tensorboard --logdir $HOME\pong_ai_bot_runs
+```
+
+‏TensorBoard אחד על התיקייה הראשית, או על התיקייה ש-`PONG_AI_BOT_RUNS_DIR` מציין, מראה את כל ה-Run-ים יחד, כדי להשוות ביניהם ([#10](https://github.com/sela27/pong_ai_bot/issues/10)). הוא נפתח בדפדפן ב-`http://localhost:6006`, ומתעדכן בזמן שה-Run רץ, באיחור של עד שתי דקות. כל Run כותב את הגרפים לתיקייה שלו, וציר ה-X הוא מונה ה-Step-ים. השמות והתדירויות בטבלה "גרפים" ב-[spec](https://github.com/sela27/pong_ai_bot/issues/17). ‏`train/max_q` מחושב על 1,000 קלטים קבועים, שה-Run אוסף במשחק אקראי לפני Step 0 ושומר בתיקייה שלו.
+
 ### למדוד
 
 ```
@@ -72,6 +114,12 @@ uv run pong evaluate --scripted random
 - `random`: ‏Action אקראית בכל Step, עם seed קבוע.
 - `edge-predictor`: מחשב לאן הכדור יגיע, כולל קפיצה מקיר, ומחזיר אותו מקצה ה-Paddle ב-45 מעלות, לצד הרחוק מה-Paddle של ה-Opponent. כשהכדור מתרחק, הוא חוזר למרכז. מחליט כל Step, כמו ה-Agent ([#7](https://github.com/sela27/pong_ai_bot/issues/7)).
 
+```
+uv run pong evaluate --milestone $HOME\pong_ai_bot_runs\2026-11-27_1430_position-learner_tiny_seed1\milestone_000500000.pt
+```
+
+‏Evaluation של Milestone בדיעבד, אחרי ה-Run, על אותו סט רגיל ([#13](https://github.com/sela27/pong_ai_bot/issues/13)). הפקודה קוראת מקובץ ההגדרות של ה-Run איזה שחקן הוא אימן, טוענת את המשקלים של ה-Milestone לרשת מהסוג שלו, ומשחקת בשחקן החמדן, שבוחר בכל Step את ה-Action עם ה-Q הגבוה ביותר, על ה-CPU. שורת הסיכום אומרת את ה-Step של ה-Milestone, ו-`--output FILE` עובד כמו ב-Scripted player. הפקודה אף פעם לא כותבת ל-`evaluations.jsonl` של Run: היא מסרבת לקבל ב-`--output` את ה-`evaluations.jsonl` של כל Run, גם ב-Scripted player, לפני שהיא משחקת, כדי שלא תשנה את ה-Milestone ש-Run בוחר ([#17](https://github.com/sela27/pong_ai_bot/issues/17)). ל-Milestone של סביבת בדיקה אין Evaluation, כי אין בה ניקוד.
+
 ### לבחור את רוחב ההיסט
 
 ```
@@ -84,4 +132,6 @@ uv run pong choose-width
 
 ## רשימות בדיקה
 
+- [לפני Run](docs/checklists/before-a-run.md): לפני כל Run חדש, של ה-Position learner או של ה-Agent. זה שער.
+- [‏Run בריא](docs/checklists/healthy-run.md): בזמן כל Run, מול הגרפים ב-TensorBoard, וכשמאבחנים Run שנכשל.
 - [בדיקת החלון בעין](docs/checklists/window.md): אחרי כל שינוי בחלון.
