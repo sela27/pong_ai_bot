@@ -8,9 +8,11 @@
 
 | שלב | מצב |
 |---|---|
-| 1. הסביבה | בעבודה |
-| 2. הלומד ולולאת האימון | לא התחיל |
+| 1. הסביבה | גמור ([#34](https://github.com/sela27/pong_ai_bot/issues/34)) |
+| 2. הלומד ולולאת האימון | בעבודה |
 | 3. ה-Agent מפיקסלים | לא התחיל |
+
+בשלב 1, ‏`pong play` עבר את [`window.md`](docs/checklists/window.md) בבדיקה של המפתח: תשע שורות [בבדיקה הראשונה](https://github.com/sela27/pong_ai_bot/issues/33#issuecomment-7212234760), ושורה 9 [בבדיקה החוזרת](https://github.com/sela27/pong_ai_bot/issues/33#issuecomment-7217579392), ברוחב הנעול.
 
 ## מה צריך
 
