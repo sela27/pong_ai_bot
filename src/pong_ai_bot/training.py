@@ -321,7 +321,8 @@ def resume_run(
     graph's inputs are the ones the Run saved.
 
     It saves and evaluates its Milestones, stops as `train_run` does, and holds
-    the request `stay_awake` makes, and says where it stopped. A Run stopped after
+    the request `stay_awake` makes, and says where it stopped. If it has Steps
+    to play, it prints that a new replay buffer fills before the learning goes on. A Run stopped after
     its training was over, and before its Confirmation, such as by Ctrl+C in it,
     plays no Step more: it only has its Confirmation.
 
@@ -503,9 +504,19 @@ def _play_run(
     for milestone in run.milestones():
         if milestone.step not in measured:
             measure(milestone)
+
     # A resume from a full checkpoint at the Budget plays no Step, as when a crash
     # stopped the Run before its Confirmation. The same goes once its training
     # stopped at a Milestone of at least stop_mean: its checkpoint is there.
+    def stop() -> bool:
+        return ctrl_c.pressed or stop_at is not None
+
+    if resumes and start < settings.budget and not stop():
+        print(
+            "The Run goes on with a new Game, and a new replay buffer, which "
+            f"fills for {settings.fill_steps:,} Steps before the learning goes on.",
+            flush=True,
+        )
     graphs.begin(start, resumes=resumes)
     stopped_at = train(
         env,
@@ -515,7 +526,7 @@ def _play_run(
         seed=seed,
         start=start,
         after_step=after_step,
-        stop=lambda: ctrl_c.pressed or stop_at is not None,
+        stop=stop,
         graphs=graphs,
     )
     # Over at its first Milestone of at least stop_mean, or at its Budget with

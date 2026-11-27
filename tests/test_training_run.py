@@ -892,6 +892,29 @@ def test_a_resumed_run_plays_on_from_its_latest_checkpoint_to_its_budget() -> No
     assert [saved.step for saved in run.milestones()] == [0, 10, 12]
 
 
+def test_a_resume_with_steps_left_says_a_new_buffer_fills_before_learning_on(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run = stopped_by_ctrl_c(
+        RunSettings(budget=12, checkpoint_every=5, milestone_every=10, fill_steps=3),
+        at=7,
+    )
+    capsys.readouterr()
+
+    resume_run(
+        run,
+        ConstantRewardEnv(),
+        CountingLearner(),
+        stay_awake=Awake(),
+        writer=NoGraphs(),
+    )
+
+    assert capsys.readouterr().out.splitlines()[0] == (
+        "The Run goes on with a new Game, and a new replay buffer, which fills for "
+        "3 Steps before the learning goes on."
+    )
+
+
 def test_each_resume_counts_one_more_in_the_run_s_checkpoints() -> None:
     run = stopped_by_ctrl_c(
         RunSettings(budget=12, checkpoint_every=5, milestone_every=10), at=7
@@ -1077,7 +1100,10 @@ def test_a_resume_measures_first_the_milestone_whose_evaluation_was_abandoned(
     ids=["ctrl_c-stopped-at-19", "crash-stopped-at-19", "crash-at-the-budget"],
 )
 def test_a_run_stopped_before_its_confirmation_has_it_on_resume_and_no_step(
-    means: dict[int, float], end: int, interruption: str
+    means: dict[int, float],
+    end: int,
+    interruption: str,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     # Checkpoints every 4 Steps, and Milestones every 10, and at the Budget, 23,
     # each with a checkpoint at its Step. A crash, or Ctrl+C, in the Confirmation
@@ -1103,6 +1129,7 @@ def test_a_run_stopped_before_its_confirmation_has_it_on_resume_and_no_step(
     milestones = run.milestones()
     learner = EpsilonRecordingLearner()
     evaluation = FixedMeans(means, confirmation=18.5)
+    capsys.readouterr()
 
     stopped = resume_run(
         run,
@@ -1114,9 +1141,11 @@ def test_a_run_stopped_before_its_confirmation_has_it_on_resume_and_no_step(
     )
 
     assert stopped == RunStop(step=end, by_ctrl_c=False)
-    # The Confirmation alone: no Step, no Milestone, and no Evaluation again.
+    # The Confirmation alone: no Step, no Milestone, and no Evaluation again,
+    # and so no replay buffer to fill.
     assert evaluation.asked == [(10, CONFIRMATION)]
     assert learner.epsilons == []
+    assert "replay buffer" not in capsys.readouterr().out
     assert run.milestones() == milestones
     confirmation = run.confirmation()
     assert confirmation is not None

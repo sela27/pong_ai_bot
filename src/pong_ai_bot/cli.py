@@ -503,11 +503,7 @@ def _train_or_resume(
     purge_step = None
     if resumed:
         step = run.checkpoints()[-1].step
-        print(
-            f"Resuming the Run at Step {step:,}, from its latest full checkpoint, "
-            f"with a new Game. A new replay buffer fills for {settings.fill_steps:,} "
-            "Steps before the learning goes on."
-        )
+        print(f"Resuming the Run at Step {step:,}, from its latest full checkpoint.")
         # TensorBoard hides every point from this Step on that was written before:
         # those written after the checkpoint, which the resumed Run writes again.
         purge_step = step + 1
