@@ -19,6 +19,7 @@ Set in [#16](https://github.com/sela27/pong_ai_bot/issues/16). A real Run, of th
 
 - Runs live outside the repo, in `~/pong_ai_bot_runs/` or the directory `PONG_AI_BOT_RUNS_DIR` names. You only ever read there, and never delete anything there.
 - On your own: everything in [`docs/checklists/before-a-run.md`](docs/checklists/before-a-run.md); tiny Runs of the test environments (`pong train --player test-env-1` to `test-env-4`), with `PONG_AI_BOT_RUNS_DIR` set to a temp directory; and reading a Run's TensorBoard files and `evaluations.jsonl`, to diagnose it line by line against [`docs/checklists/healthy-run.md`](docs/checklists/healthy-run.md).
+- While a real Run runs, the main checkout stays as the Run started it: merging into `main` waits until the Run is over, since `uv run` there can update the packages the Run is using ([#65](https://github.com/sela27/pong_ai_bot/issues/65)).
 - Starting, resuming or stopping a real Run waits for the developer's explicit "yes". Then hand them the exact command to run in their own terminal: a process you start can die with the conversation, hours into the Run. Their terminal is Windows PowerShell 5.1, which passes `~` to `uv` unexpanded, so write a Run's path as `$HOME\pong_ai_bot_runs\...`.
 - The Confirmation set is played once, at the end of its Run; you never evaluate on it by hand ([#14](https://github.com/sela27/pong_ai_bot/issues/14)).
 - After a failed Run, propose a diagnosis and a step up the ladder ([#14](https://github.com/sela27/pong_ai_bot/issues/14)); the developer decides.
