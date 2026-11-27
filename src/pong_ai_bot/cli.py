@@ -96,7 +96,10 @@ def main(argv: list[str] | None = None) -> int:
         "--player",
         required=True,
         choices=list(LEARNING_PLAYERS),
-        help="the learning player to train; so far only the test environments'",
+        help=(
+            "the learning player to train: the Position learner, or a test "
+            "environment's; the Agent comes later"
+        ),
     )
     train_command.add_argument(
         "--name", required=True, help="the Run's short name, in its directory's name"

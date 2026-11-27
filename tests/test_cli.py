@@ -649,7 +649,7 @@ class FakeConfirmation:
 @pytest.fixture
 def fake_pong_player(monkeypatch: pytest.MonkeyPatch) -> str:
     """The name of a learning player of OneStepPong, whose Runs have Evaluations,
-    as the Position learner's and the Agent's will: `--player fake-pong`.
+    as the Position learner's do and the Agent's will: `--player fake-pong`.
 
     Its Milestones' Evaluations on the regular set are the real ones, and its
     Runs' Confirmation is FakeConfirmation.
