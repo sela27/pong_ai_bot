@@ -8,9 +8,11 @@
 
 | שלב | מצב |
 |---|---|
-| 1. הסביבה | בעבודה |
-| 2. הלומד ולולאת האימון | לא התחיל |
+| 1. הסביבה | גמור ([#34](https://github.com/sela27/pong_ai_bot/issues/34)) |
+| 2. הלומד ולולאת האימון | בעבודה |
 | 3. ה-Agent מפיקסלים | לא התחיל |
+
+בשלב 1, ‏`pong play` עבר את [`window.md`](docs/checklists/window.md) בבדיקה של המפתח: תשע שורות [בבדיקה הראשונה](https://github.com/sela27/pong_ai_bot/issues/33#issuecomment-7212234760), ושורה 9 [בבדיקה החוזרת](https://github.com/sela27/pong_ai_bot/issues/33#issuecomment-7217579392), ברוחב הנעול.
 
 ## מה צריך
 
@@ -68,7 +70,6 @@ uv run pong evaluate --scripted random
 ה-Scripted player-ים:
 
 - `random`: ‏Action אקראית בכל Step, עם seed קבוע.
-- `opponent-copy`: אותו כלל עוקב של ה-Opponent, בצד ימין, כדי לבדוק שהמשחק סימטרי. בכל Step הוא בוחר את ה-Action שמסיימת את ה-Step הכי קרוב למקום שהכלל היה מביא אליו את ה-Paddle.
 - `edge-predictor`: מחשב לאן הכדור יגיע, כולל קפיצה מקיר, ומחזיר אותו מקצה ה-Paddle ב-45 מעלות, לצד הרחוק מה-Paddle של ה-Opponent. כשהכדור מתרחק, הוא חוזר למרכז. מחליט כל Step, כמו ה-Agent ([#7](https://github.com/sela27/pong_ai_bot/issues/7)).
 
 ### לבחור את רוחב ההיסט
@@ -77,7 +78,9 @@ uv run pong evaluate --scripted random
 uv run pong choose-width
 ```
 
-‏Evaluation של שלושת ה-Scripted player-ים על הסט הרגיל, נגד Opponent בכל אחד מחמשת רוחבי ההיסט, וההעתק של ה-Opponent משחק באותו רוחב. אחרי כל Evaluation מודפסת שורת הסיכום שלו, ובסוף טבלה עם הממוצע של כל שחקן בכל רוחב ומה נכשל בכל רוחב, והרוחב שנבחר לפי הכלל של [#7](https://github.com/sela27/pong_ai_bot/issues/7). אם אף רוחב לא עובר, הפקודה אומרת את זה, לא בוחרת, ונכשלת. בשוויון בממוצע של המנבא נבחר הצר מבין הרוחבים, והפקודה אומרת שהיה שוויון. זה סקריפט ולא בדיקה: 15 ה-Evaluation-ים לוקחים כמה דקות. הפקודה לא נועלת את הרוחב.
+‏Evaluation של שני ה-Scripted player-ים על הסט הרגיל, נגד Opponent בכל אחד מחמשת רוחבי ההיסט. אחרי כל Evaluation מודפסת שורת הסיכום שלו, ובסוף טבלה עם הממוצע של כל שחקן בכל רוחב ומה נכשל בכל רוחב, והרוחב שנבחר לפי הכלל של [#7](https://github.com/sela27/pong_ai_bot/issues/7). אם אף רוחב לא עובר, הפקודה אומרת את זה, לא בוחרת, ונכשלת. בתיקו בממוצע של המנבא נבחר הרחב מבין הרוחבים, והפקודה אומרת שהיה תיקו ([#62](https://github.com/sela27/pong_ai_bot/issues/62)). זה סקריפט ולא בדיקה: 10 ה-Evaluation-ים לוקחים כמה דקות. הפקודה לא נועלת את הרוחב.
+
+הרוחב נבחר וננעל על 100% מחצי גובה ה-Paddle, כברירת המחדל של ה-Opponent, בכל מקום שהוא משחק, גם ב-`pong play` וב-`pong evaluate` ([#31](https://github.com/sela27/pong_ai_bot/issues/31), לפי הכלל של [#62](https://github.com/sela27/pong_ai_bot/issues/62)). שתי בדיקות איטיות, `uv run pytest -m slow`, בודקות שברוחב הנעול שני ה-Scripted player-ים עדיין עוברים את הכלל.
 
 ## רשימות בדיקה
 

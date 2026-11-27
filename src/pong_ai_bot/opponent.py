@@ -16,8 +16,9 @@ import numpy as np
 
 from pong_ai_bot.game import MAX_PADDLE_MOVE, PADDLE_HEIGHT, PhysicsState, Side
 
-DEFAULT_OFFSET_WIDTH = 0.5
-"""A stand-in for the offset width, until it is chosen and locked (#30, #31)."""
+DEFAULT_OFFSET_WIDTH = 1.0
+"""The offset width, locked: 100% of half the Paddle's height, as `pong choose-width`
+chose it (#31), by the rule of issue #62."""
 
 
 class Opponent:
