@@ -79,8 +79,9 @@ LEARNING_PLAYERS: dict[str, LearningPlayer] = {
 def milestone_evaluation(network: nn.Module, make_env: EnvMaker) -> MilestoneEvaluation:
     """The Evaluation of a learning player's Milestones, as its Run plays it: each
     Milestone's weights loaded into `network`, played by the greedy player, with
-    one pass through the network a Step for all the Games still going, on the
-    regular set, in environments from `make_env` (#13).
+    one pass through the network a Step for all the Games still going, on the set
+    the Run asks for, in environments from `make_env` (#13). Only the end of a
+    Run asks for the Confirmation's set, once (issue #16).
 
     `network` is the Evaluation's own, of the player's kind, on the device the
     Games are played on: each Milestone loaded changes its weights.
@@ -94,11 +95,9 @@ def milestone_evaluation(network: nn.Module, make_env: EnvMaker) -> MilestoneEva
     device = next(network.parameters()).device
 
     def evaluate_milestone(
-        milestone: SavedFile, *, stop: Callable[[], bool]
+        milestone: SavedFile, *, seed_set: SeedSet, stop: Callable[[], bool]
     ) -> Evaluation:
         network.load_state_dict(torch.load(milestone.path, map_location=device))
-        return evaluate(
-            GreedyPlayer(network), make_env, SeedSet.REGULAR.seeds, stop=stop
-        )
+        return evaluate(GreedyPlayer(network), make_env, seed_set.seeds, stop=stop)
 
     return evaluate_milestone

@@ -17,7 +17,7 @@ from gymnasium import spaces
 from torch import nn
 
 from pong_ai_bot.environment import Action
-from pong_ai_bot.evaluation import EvaluationStopped, Summary
+from pong_ai_bot.evaluation import EvaluationStopped, SeedSet, Summary
 from pong_ai_bot.game import Score
 from pong_ai_bot.learning_players import milestone_evaluation
 from pong_ai_bot.run_directory import Commit, RunDirectory, SavedFile
@@ -75,8 +75,8 @@ def test_a_milestone_is_played_greedily_by_its_weights_on_the_regular_set(
     down = milestone_preferring(run, Action.DOWN, step=20)
     evaluate_milestone = milestone_evaluation(nn.Linear(1, 3), OneStepGames)
 
-    moving_up = evaluate_milestone(up, stop=lambda: False)
-    moving_down = evaluate_milestone(down, stop=lambda: False)
+    moving_up = evaluate_milestone(up, seed_set=SeedSet.REGULAR, stop=lambda: False)
+    moving_down = evaluate_milestone(down, seed_set=SeedSet.REGULAR, stop=lambda: False)
 
     # A Game for each seed of the regular set, every one won by moving up, and
     # lost by moving down.
@@ -94,4 +94,4 @@ def test_a_milestone_s_evaluation_is_abandoned_when_stop_says(
     evaluate_milestone = milestone_evaluation(nn.Linear(1, 3), OneStepGames)
 
     with pytest.raises(EvaluationStopped):
-        evaluate_milestone(up, stop=lambda: True)
+        evaluate_milestone(up, seed_set=SeedSet.REGULAR, stop=lambda: True)

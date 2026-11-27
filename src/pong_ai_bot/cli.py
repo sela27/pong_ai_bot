@@ -86,8 +86,10 @@ def main(argv: list[str] | None = None) -> int:
         description=(
             "Start a new Run of a learning player, from scratch: a Run directory, "
             "whose settings file records the settings and never changes, and "
-            "training to the Budget. It never starts from another Run's weights. "
-            "It refuses the CPU unless --device cpu asks for it."
+            "training to the Budget. A player with Evaluations stops at its first "
+            "Milestone good enough, and then gives its best Milestone its one "
+            "Confirmation. It never starts from another Run's weights. It refuses "
+            "the CPU unless --device cpu asks for it."
         ),
     )
     train_command.add_argument(
@@ -114,7 +116,8 @@ def main(argv: list[str] | None = None) -> int:
         help="resume a Run that stopped, by its directory",
         description=(
             "Resume a Run that stopped, by Ctrl+C or by a crash, as the same Run: "
-            "from its latest full checkpoint, with a new Game, to its Budget. Its "
+            "from its latest full checkpoint, with a new Game, to its end, and its "
+            "Confirmation if it hasn't had it. A Run that had it never goes on. Its "
             "settings are read from its settings file and never change. It warns "
             "if the code is at another commit than the Run was created at, and "
             "refuses the CPU unless --device cpu asks for it."
@@ -300,15 +303,22 @@ def _resume(args: argparse.Namespace) -> int:
         run = RunDirectory.open(args.run)
     for warning in warned:
         print(f"Warning: {warning.message}", file=sys.stderr)
+    # So that the Confirmation's set never becomes a set to choose by (issues #13,
+    # #14).
+    confirmation = run.confirmation()
+    if confirmation is not None:
+        print(
+            "The Run had its Confirmation, of the Milestone at Step "
+            f"{confirmation.step:,}: a Run never goes on after it.",
+            file=sys.stderr,
+        )
+        return 1
     budget = run.settings.budget
     # The Run's end saves a Milestone at its Budget, which may come after its
-    # latest checkpoint, and evaluates it, if the Run has Evaluations. If Ctrl+C
-    # abandoned that Evaluation, the Run resumes from its checkpoint at the Budget
-    # to measure it.
+    # latest checkpoint. A Run with Evaluations then evaluates it, and confirms
+    # its best Milestone: until it has its Confirmation, its resume gives it.
     evaluated = LEARNING_PLAYERS[run.player].evaluated
-    if any(saved.step == budget for saved in run.milestones()) and (
-        not evaluated or budget in run.evaluations()
-    ):
+    if not evaluated and any(saved.step == budget for saved in run.milestones()):
         print(
             f"The Run reached its Budget, {budget:,} Steps, already: there is "
             "nothing to resume."
@@ -399,5 +409,11 @@ def _train_or_resume(run: RunDirectory, device: torch.device, *, resumed: bool) 
             "there."
         )
         return _STOPPED_BY_CTRL_C
-    print(f"The Run reached its Budget, {settings.budget:,} Steps.")
+    if stopped.step == settings.budget:
+        print(f"The Run reached its Budget, {settings.budget:,} Steps.")
+    else:
+        print(
+            f"The Run stopped at Step {stopped.step:,}, its first Milestone with a "
+            f"mean of at least {settings.stop_mean:g} on the regular set."
+        )
     return 0

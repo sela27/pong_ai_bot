@@ -17,6 +17,7 @@ import pytest
 from gymnasium import spaces
 
 from pong_ai_bot.cli import main
+from pong_ai_bot.evaluation import Evaluation, GameResult
 from pong_ai_bot.game import Score
 from pong_ai_bot.run_directory import Commit, RunDirectory, checked_out_commit
 from pong_ai_bot.run_settings import Loss, RunSettings
@@ -632,12 +633,31 @@ class OneStepPong(gym.Env[npt.NDArray[np.float32], np.int64]):
         return np.zeros(1, np.float32), reward, True, False, {"score": score}
 
 
+class FakeConfirmation:
+    """The Confirmation of a fake-pong Run, a fake that plays no Game, so that no
+    test ever plays the Confirmation's set (issue #16): it gives the Milestone one
+    Game of Score margin `MARGIN`, a fixed result.
+
+    It presses Ctrl+C in it, as the developer would, if `ctrl_c`, and asks `stop`
+    then whether to abandon it, as the real one does.
+    """
+
+    MARGIN = 17
+    ctrl_c = False
+
+
 @pytest.fixture
 def fake_pong_player(monkeypatch: pytest.MonkeyPatch) -> str:
     """The name of a learning player of OneStepPong, whose Runs have Evaluations,
-    as the Position learner's and the Agent's will: `--player fake-pong`."""
+    as the Position learner's and the Agent's will: `--player fake-pong`.
+
+    Its Milestones' Evaluations on the regular set are the real ones, and its
+    Runs' Confirmation is FakeConfirmation.
+    """
     from torch import nn
 
+    from pong_ai_bot import learning_players
+    from pong_ai_bot.evaluation import EvaluationStopped, SeedSet
     from pong_ai_bot.learning_players import LEARNING_PLAYERS, LearningPlayer
 
     player = LearningPlayer(
@@ -649,7 +669,64 @@ def fake_pong_player(monkeypatch: pytest.MonkeyPatch) -> str:
     )
     monkeypatch.setitem(LEARNING_PLAYERS, "fake-pong", player)
     monkeypatch.setattr(OneStepPong, "regular_resets", 0)
+    monkeypatch.setattr(FakeConfirmation, "ctrl_c", False)
+    real_evaluation = learning_players.milestone_evaluation
+
+    def confirmation_faked(network: Any, make_env: Any) -> Any:
+        evaluate_milestone = real_evaluation(network, make_env)
+
+        def evaluation(milestone: Any, *, seed_set: SeedSet, stop: Any) -> Evaluation:
+            if seed_set is not SeedSet.CONFIRMATION:
+                return evaluate_milestone(milestone, seed_set=seed_set, stop=stop)
+            if FakeConfirmation.ctrl_c:
+                handler = signal.getsignal(signal.SIGINT)
+                assert callable(handler)
+                handler(signal.SIGINT, None)
+            if stop():
+                raise EvaluationStopped
+            margin = FakeConfirmation.MARGIN
+            return Evaluation(
+                games=(GameResult(seed=0, score_margin=margin, cut_off=False),)
+            )
+
+        return evaluation
+
+    monkeypatch.setattr(learning_players, "milestone_evaluation", confirmation_faked)
     return "fake-pong"
+
+
+def test_pong_resume_refuses_a_run_that_had_its_confirmation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    fake_pong_player: str,
+) -> None:
+    # Stopped at its Milestone of Step 20, before its Budget, and confirmed: a
+    # fixed result, of one Game, rather than one played.
+    monkeypatch.setenv("PONG_AI_BOT_RUNS_DIR", str(tmp_path / "runs"))
+    run = RunDirectory.create(
+        player=fake_pong_player,
+        name="tiny",
+        seed=1,
+        settings=RunSettings(budget=30, checkpoint_every=5, milestone_every=20),
+        commit=A_COMMIT,
+    )
+    for save, step in [(run.save_checkpoint, 20), (run.save_milestone, 20)]:
+        save(step, lambda file: file.write(b"saved"))
+    run.record_confirmation(
+        Evaluation(games=(GameResult(seed=0, score_margin=17, cut_off=False),)),
+        step=20,
+    )
+    files = sorted(run.path.iterdir())
+
+    exit_code = main(["resume", str(run.path), "--device", "cpu"])
+
+    assert exit_code == 1
+    assert capsys.readouterr().err.splitlines()[-1] == (
+        "The Run had its Confirmation, of the Milestone at Step 20: a Run never "
+        "goes on after it."
+    )
+    assert sorted(run.path.iterdir()) == files
 
 
 TINY_EVALUATED_RUN = [
@@ -671,8 +748,12 @@ TINY_EVALUATED_RUN = [
     "5",
     "--milestone-every",
     "20",
+    "--stop-mean",
+    "22",
 ]
-"""A Run of 30 Steps, with Milestones at Step 0, 20 and 30, on the CPU."""
+"""A Run of 30 Steps, with Milestones at Step 0, 20 and 30, on the CPU. It never
+stops before its Budget: no Evaluation's mean reaches 22, above a Game's highest
+Score margin, though OneStepPong's greedy player wins all its Games from Step 0."""
 
 
 @pytest.mark.slow
@@ -693,17 +774,21 @@ def test_pong_train_evaluates_each_milestone_on_the_regular_set(
         json.loads(line)
         for line in (path / "evaluations.jsonl").read_text("utf-8").splitlines()
     ]
-    assert [(line["step"], line["set"]) for line in lines] == [
+    regular, [confirmation] = lines[:3], lines[3:]
+    assert [(line["step"], line["set"]) for line in regular] == [
         (0, "regular"),
         (20, "regular"),
         (30, "regular"),
     ]
-    for line in lines:
+    for line in regular:
         assert [game["seed"] for game in line["games"]] == list(
             range(1_000_000, 1_000_100)
         )
         # Every Game won or lost 21 to 0, as the greedy player moves up or not.
         assert {abs(game["score_margin"]) for game in line["games"]} == {21}
+    # Then the fake Confirmation, of one of them.
+    assert confirmation["set"] == "confirmation"
+    assert confirmation["step"] in {0, 20, 30}
     summaries = [
         line
         for line in capsys.readouterr().out.splitlines()
@@ -713,6 +798,7 @@ def test_pong_train_evaluates_each_milestone_on_the_regular_set(
         "Evaluation on the regular set at Step 0",
         "Evaluation on the regular set at Step 20",
         "Evaluation on the regular set at Step 30",
+        f"Evaluation on the confirmation set at Step {confirmation['step']}",
     ]
 
 
@@ -747,8 +833,49 @@ def test_ctrl_c_in_the_run_s_last_evaluation_leaves_it_to_pong_resume(
 
     exit_code = main(["resume", str(path), "--device", "cpu"])
 
+    # The Milestone at the Budget is measured, and then the best is confirmed.
     assert exit_code == 0
     out = capsys.readouterr().out.splitlines()
-    assert out[-2].startswith("Evaluation on the regular set at Step 30: ")
+    assert out[-4].startswith("Evaluation on the regular set at Step 30: ")
+    assert out[-3].startswith("Evaluation on the confirmation set at Step ")
+    assert out[-2].startswith("The Confirmation's mean, +17.00, is below 18: ")
     assert out[-1] == "The Run reached its Budget, 30 Steps."
     assert list(run.evaluations()) == [0, 20, 30]
+    assert run.confirmation() is not None
+
+
+@pytest.mark.slow
+def test_ctrl_c_in_the_run_s_confirmation_leaves_it_to_pong_resume_and_only_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    fake_pong_player: str,
+) -> None:
+    # Slow for the learner's optimizer, as above.
+    monkeypatch.setenv("PONG_AI_BOT_RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setattr(FakeConfirmation, "ctrl_c", True)
+
+    exit_code = main(["train", "--player", fake_pong_player, *TINY_EVALUATED_RUN])
+
+    assert exit_code == 130
+    out = capsys.readouterr().out.splitlines()
+    assert out[-1] == "Ctrl+C stopped the Run at Step 30, with a full checkpoint there."
+    assert out[-2].startswith("Ctrl+C abandoned the Confirmation of the Milestone")
+    [path] = (tmp_path / "runs").iterdir()
+    run = RunDirectory.open(path)
+    assert run.confirmation() is None
+    monkeypatch.setattr(FakeConfirmation, "ctrl_c", False)
+
+    exit_code = main(["resume", str(path), "--device", "cpu"])
+
+    # The Run at its Budget, measured, has only its Confirmation left.
+    assert exit_code == 0
+    out = capsys.readouterr().out.splitlines()
+    assert not [line for line in out if line.startswith("Evaluation on the regular")]
+    assert out[-3].startswith("Evaluation on the confirmation set at Step ")
+    assert out[-1] == "The Run reached its Budget, 30 Steps."
+    assert run.confirmation() is not None
+    assert run.checkpoints()[-1].step == 30
+
+    # And once it had it, it never goes on.
+    assert main(["resume", str(path), "--device", "cpu"]) == 1
