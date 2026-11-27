@@ -3,6 +3,7 @@
 import json
 import re
 import shutil
+import signal
 import subprocess
 import sysconfig
 from dataclasses import fields
@@ -275,6 +276,76 @@ def test_pong_train_runs_a_test_environment_s_tiny_run_to_its_budget(
     assert same_weights(
         torch.load(run.milestones()[-1].path), last["learner"]["network"]
     )
+
+
+@pytest.mark.slow
+def test_ctrl_c_stops_pong_train_after_its_step_with_a_full_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Slow for the learner's optimizer, as above.
+    import torch
+
+    from pong_ai_bot.test_environments import ConstantRewardEnv
+
+    runs = tmp_path / "runs"
+    monkeypatch.setenv("PONG_AI_BOT_RUNS_DIR", str(runs))
+    # Ctrl+C is pressed while the environment plays the Run's Step 12, without a
+    # real signal: Python calls the handler of SIGINT when Ctrl+C is pressed.
+    play_step = ConstantRewardEnv.step
+    steps_played = 0
+
+    def step_pressing_ctrl_c_in_step_12(
+        env: ConstantRewardEnv, action: int
+    ) -> tuple[Any, SupportsFloat, bool, bool, dict[str, Any]]:
+        nonlocal steps_played
+        steps_played += 1
+        if steps_played == 12:
+            handler = signal.getsignal(signal.SIGINT)
+            assert callable(handler)
+            handler(signal.SIGINT, None)
+        return play_step(env, action)
+
+    monkeypatch.setattr(ConstantRewardEnv, "step", step_pressing_ctrl_c_in_step_12)
+
+    exit_code = main(
+        [
+            "train",
+            "--player",
+            "test-env-1",
+            "--name",
+            "tiny",
+            "--seed",
+            "1",
+            "--device",
+            "cpu",
+            "--budget",
+            "30",
+            "--fill-steps",
+            "10",
+            "--replay-buffer-size",
+            "100",
+            "--batch-size",
+            "4",
+            "--checkpoint-every",
+            "5",
+        ]
+    )
+
+    # As a program stopped by Ctrl+C: 128 and SIGINT's number, 2.
+    assert exit_code == 130
+    assert capsys.readouterr().out.splitlines()[-1] == (
+        "Ctrl+C stopped the Run at Step 12, with a full checkpoint there."
+    )
+    [path] = runs.iterdir()
+    run = RunDirectory.open(path)
+    # The latest two checkpoints are kept, the one of Step 5 deleted.
+    assert [saved.step for saved in run.checkpoints()] == [10, 12]
+    last = torch.load(run.checkpoints()[-1].path)
+    assert (last["step"], last["resumes"]) == (12, 0)
+    assert last["learner"]["steps_given"] == 12
+    assert [saved.step for saved in run.milestones()] == [0]
 
 
 def same_weights(weights: dict[str, Any], other: dict[str, Any]) -> bool:
