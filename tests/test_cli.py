@@ -496,63 +496,6 @@ def train_stopped_by_ctrl_c(settings: list[str], *, at: int, presses: int) -> Pa
 
 
 @pytest.mark.slow
-def test_pong_resume_refills_the_buffer_before_learning_on_counting_its_steps(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    # Slow for the learner's optimizer, as above.
-    import torch
-
-    # An update every Step, once the buffer holds 10 transitions.
-    path = train_stopped_by_ctrl_c(
-        [
-            "--budget",
-            "30",
-            "--fill-steps",
-            "10",
-            "--replay-buffer-size",
-            "100",
-            "--batch-size",
-            "4",
-            "--update-every",
-            "1",
-            "--checkpoint-every",
-            "3",
-            "--checkpoints-kept",
-            "20",
-            "--milestone-every",
-            "20",
-        ],
-        at=12,
-        presses=1,
-    )
-    capsys.readouterr()
-
-    exit_code = main(["resume", str(path), "--device", "cpu"])
-
-    assert exit_code == 0
-    out = capsys.readouterr().out.splitlines()
-    assert out[0] == "Device: cpu"
-    assert out[-1] == "The Run reached its Budget, 30 Steps."
-    run = RunDirectory.open(path)
-    # The Step count goes on from 12 to the Budget, with its checkpoints and
-    # Milestones, and those after the resume count it.
-    steps = sorted([*range(3, 31, 3), 20])
-    assert [saved.step for saved in run.checkpoints()] == steps
-    assert [saved.step for saved in run.milestones()] == [0, 20, 30]
-    checkpoints = {saved.step: torch.load(saved.path) for saved in run.checkpoints()}
-    assert {step: c["resumes"] for step, c in checkpoints.items()} == {
-        step: 0 if step <= 12 else 1 for step in steps
-    }
-    assert checkpoints[30]["learner"]["steps_given"] == 30
-    # The new buffer fills in Steps 13 to 22, so the network learns on only from
-    # Step 22: at Step 21 it is still the one of the checkpoint.
-    at_the_stop = checkpoints[12]["learner"]["network"]
-    for step in (15, 18, 21):
-        assert same_weights(checkpoints[step]["learner"]["network"], at_the_stop)
-    assert not same_weights(checkpoints[24]["learner"]["network"], at_the_stop)
-
-
-@pytest.mark.slow
 def test_pong_resume_drops_the_graphs_points_written_after_the_checkpoint() -> None:
     # Slow for the learner's optimizer, as above, and for TensorBoard's reader.
     from tensorboard.backend.event_processing.event_accumulator import (  # type: ignore[import-untyped]

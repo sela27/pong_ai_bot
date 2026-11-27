@@ -4,7 +4,8 @@ the fixed inputs of its Q graph, its stop at the Budget, at its first Milestone 
 awake (issues #10, #13, #14).
 
 The learner is a fake, with no network and no optimizer: creating the real one's
-optimizer takes seconds, too long for a fast test. So are the request to Windows,
+optimizer takes seconds, too long for a fast test. Where a test needs the real
+learner, its optimizer is a fake instead. So are the request to Windows,
 and TensorBoard's writer, which takes seconds to import: the graphs are checked by
 eye in TensorBoard, on a test environment's Run (#17). So is the Evaluation, which
 plays no Game: no test ever plays the Confirmation's set (issue #16). The
@@ -31,8 +32,11 @@ import pytest
 import torch
 from gymnasium import spaces
 from helpers import A_COMMIT, press_ctrl_c
+from torch import nn
 
 from pong_ai_bot.evaluation import Evaluation, EvaluationStopped, GameResult, SeedSet
+from pong_ai_bot.learner import Learner, LearnerSettings
+from pong_ai_bot.learning_players import LEARNING_PLAYERS
 from pong_ai_bot.run_directory import RunDirectory, SavedFile
 from pong_ai_bot.run_settings import RunSettings
 from pong_ai_bot.test_environments import ConstantRewardEnv, TwoStepEnv
@@ -913,6 +917,80 @@ def test_a_resume_with_steps_left_says_a_new_buffer_fills_before_learning_on(
         "The Run goes on with a new Game, and a new replay buffer, which fills for "
         "3 Steps before the learning goes on."
     )
+
+
+class NoOptimizer:
+    """A fake of the learner's optimizer, Adam, which leaves the network's
+    weights as they are: creating the real one takes seconds."""
+
+    def __init__(self, network: nn.Module, settings: LearnerSettings) -> None:
+        pass
+
+    def zero_grad(self) -> None:
+        pass
+
+    def step(self) -> None:
+        pass
+
+    def state_dict(self) -> dict[str, Any]:
+        return {}
+
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        pass
+
+
+class UpdateRecordingLearner(Learner):
+    """The real learner of test environment 1's player, with a fake of its
+    optimizer, which records, for each Step it learns from, whether it updated
+    the network, and presses Ctrl+C while it learns from its Step `ctrl_c_at`, if
+    given."""
+
+    def __init__(self, settings: RunSettings, *, ctrl_c_at: int | None = None) -> None:
+        player = LEARNING_PLAYERS["test-env-1"]
+        super().__init__(
+            player.make_network(),
+            actions=player.actions,
+            stack_length=player.stack_length,
+            settings=LearnerSettings.of_run(settings),
+            seed=1,
+            optimizer=NoOptimizer,
+        )
+        self._ctrl_c_at = ctrl_c_at
+        self.updated: list[bool] = []
+
+    def learn(self, transition: Transition) -> float | None:
+        loss = super().learn(transition)
+        self.updated.append(loss is not None)
+        if len(self.updated) == self._ctrl_c_at:
+            press_ctrl_c()
+        return loss
+
+
+def test_a_resumed_run_s_learner_fills_a_new_buffer_before_it_updates_again() -> None:
+    # An update every Step, once the buffer holds 3 transitions.
+    settings = RunSettings(
+        budget=12,
+        checkpoint_every=5,
+        milestone_every=10,
+        replay_buffer_size=100,
+        fill_steps=3,
+        batch_size=2,
+        update_every=1,
+    )
+    run = new_run(settings)
+    make_env = LEARNING_PLAYERS["test-env-1"].make_env
+    stopped = UpdateRecordingLearner(settings, ctrl_c_at=7)
+    train_run(run, make_env(), stopped, stay_awake=Awake(), writer=NoGraphs())
+    run = RunDirectory.open(run.path, current_commit=A_COMMIT)
+    resumed = UpdateRecordingLearner(settings)
+
+    resume_run(run, make_env(), resumed, stay_awake=Awake(), writer=NoGraphs())
+
+    # Up to the stop at Step 7, the network is updated from Step 3 on. The resume
+    # learns from Steps 8 to 12: the first two fill a new buffer, with no update,
+    # and from Step 10 on, with 3 transitions in it, each updates.
+    assert stopped.updated == [False, False, True, True, True, True, True]
+    assert resumed.updated == [False, False, True, True, True]
 
 
 def test_each_resume_counts_one_more_in_the_run_s_checkpoints() -> None:

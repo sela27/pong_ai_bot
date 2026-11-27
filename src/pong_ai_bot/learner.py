@@ -20,7 +20,7 @@ value.
 import copy
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 import numpy as np
 import numpy.typing as npt
@@ -77,6 +77,31 @@ class LearnerSettings:
         )
 
 
+class Optimizer(Protocol):
+    """What the learner asks of its optimizer, as PyTorch's optimizers have it."""
+
+    def zero_grad(self) -> None: ...
+
+    def step(self) -> object: ...
+
+    def state_dict(self) -> dict[str, Any]: ...
+
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None: ...
+
+
+OptimizerMaker = Callable[[nn.Module, "LearnerSettings"], Optimizer]
+"""A function that makes the optimizer of a network's weights, by the learner's
+settings."""
+
+
+def adam(network: nn.Module, settings: LearnerSettings) -> Optimizer:
+    """Adam, for `network`'s weights, with the learning rate and eps `settings`
+    give, and PyTorch's defaults for the rest."""
+    return torch.optim.Adam(
+        network.parameters(), lr=settings.learning_rate, eps=settings.adam_eps
+    )
+
+
 class Learner:
     """Learns the Q of each Action with `network`, from the transitions it is
     given."""
@@ -89,19 +114,20 @@ class Learner:
         stack_length: int,
         settings: LearnerSettings,
         seed: int,
+        optimizer: OptimizerMaker = adam,
     ) -> None:
         """A learner for `network`, whose every input has `actions` Actions, and is
         a stack of `stack_length` Observations, as the stack's wrapper gives them.
         It draws its random choices from `seed`. Its target network starts as a
-        copy of `network`."""
+        copy of `network`. It updates `network` with the optimizer `optimizer`
+        makes for it: Adam, unless a test gives a fake, as making Adam takes
+        seconds."""
         self._network = network
         self._target_network = copy.deepcopy(network)
         self._actions = actions
         self._player = GreedyPlayer(network)
         self._settings = settings
-        self._optimizer = torch.optim.Adam(
-            network.parameters(), lr=settings.learning_rate, eps=settings.adam_eps
-        )
+        self._optimizer = optimizer(network, settings)
         self._rng = np.random.default_rng(seed)
         self._replay = ReplayBuffer(
             size=settings.replay_buffer_size, stack_length=stack_length
