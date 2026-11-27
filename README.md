@@ -74,10 +74,10 @@ uv run pong train --player test-env-1 --name tiny --seed 1 --device cpu --budget
 ### להמשיך
 
 ```
-uv run pong resume ~/pong_ai_bot_runs/2026-11-27_1430_test-env-1_tiny_seed1 --device cpu
+uv run pong resume $HOME\pong_ai_bot_runs\2026-11-27_1430_test-env-1_tiny_seed1 --device cpu
 ```
 
-המשך של Run שנעצר, ב-`Ctrl+C` או בקריסה, כאותו Run ([#10](https://github.com/sela27/pong_ai_bot/issues/10)). הפקודה מקבלת רק את תיקיית ה-Run: ההגדרות נקראות מקובץ ההגדרות שלה, ואי אפשר לשנות אותן. אם הקוד ב-commit אחר מזה שה-Run נוצר בו, מוצגת אזהרה, וה-Run ממשיך.
+המשך של Run שנעצר, ב-`Ctrl+C` או בקריסה, כאותו Run ([#10](https://github.com/sela27/pong_ai_bot/issues/10)). הפקודה מקבלת רק את תיקיית ה-Run: ההגדרות נקראות מקובץ ההגדרות שלה, ואי אפשר לשנות אותן. אם הקוד ב-commit אחר מזה שה-Run נוצר בו, מוצגת אזהרה, וה-Run ממשיך. הנתיבים בפקודות כתובים ל-PowerShell, עם `$HOME`, כי PowerShell מעביר `~` ל-`uv` כמו שהוא, ואז התיקייה לא נמצאת.
 
 ה-Run ממשיך מה-checkpoint המלא האחרון, עם Game חדש. מונה ה-Step-ים ממשיך משם, ו-ε איתו, ו-`run/resumes` עולה ב-1. ה-buffer לא נשמר, ולכן buffer חדש מתמלא במדיניות הנוכחית לפני שהלמידה חוזרת, וה-Step-ים של המילוי נספרים ב-Budget ([#14](https://github.com/sela27/pong_ai_bot/issues/14)). מה שנכתב לגרפים אחרי ה-checkpoint נמחק מ-TensorBoard, כדי שהקווים לא יחזרו אחורה. ‏Run של סביבת בדיקה שהגיע ל-Budget לא ממשיך, כי אין מה להמשיך. ‏Run שנעצר לפני ה-checkpoint הראשון לא ממשיך: מתחילים Run חדש.
 
@@ -90,7 +90,7 @@ uv run pong resume ~/pong_ai_bot_runs/2026-11-27_1430_test-env-1_tiny_seed1 --de
 ### לראות את הגרפים
 
 ```
-uv run tensorboard --logdir ~/pong_ai_bot_runs
+uv run tensorboard --logdir $HOME\pong_ai_bot_runs
 ```
 
 ‏TensorBoard אחד על התיקייה הראשית, או על התיקייה ש-`PONG_AI_BOT_RUNS_DIR` מציין, מראה את כל ה-Run-ים יחד, כדי להשוות ביניהם ([#10](https://github.com/sela27/pong_ai_bot/issues/10)). הוא נפתח בדפדפן ב-`http://localhost:6006`, ומתעדכן בזמן שה-Run רץ, באיחור של עד שתי דקות. כל Run כותב את הגרפים לתיקייה שלו, וציר ה-X הוא מונה ה-Step-ים. השמות והתדירויות בטבלה "גרפים" ב-[spec](https://github.com/sela27/pong_ai_bot/issues/17). ‏`train/max_q` מחושב על 1,000 קלטים קבועים, שה-Run אוסף במשחק אקראי לפני Step 0 ושומר בתיקייה שלו.
@@ -115,7 +115,7 @@ uv run pong evaluate --scripted random
 - `edge-predictor`: מחשב לאן הכדור יגיע, כולל קפיצה מקיר, ומחזיר אותו מקצה ה-Paddle ב-45 מעלות, לצד הרחוק מה-Paddle של ה-Opponent. כשהכדור מתרחק, הוא חוזר למרכז. מחליט כל Step, כמו ה-Agent ([#7](https://github.com/sela27/pong_ai_bot/issues/7)).
 
 ```
-uv run pong evaluate --milestone ~/pong_ai_bot_runs/2026-11-27_1430_position-learner_tiny_seed1/milestone_000500000.pt
+uv run pong evaluate --milestone $HOME\pong_ai_bot_runs\2026-11-27_1430_position-learner_tiny_seed1\milestone_000500000.pt
 ```
 
 ‏Evaluation של Milestone בדיעבד, אחרי ה-Run, על אותו סט רגיל ([#13](https://github.com/sela27/pong_ai_bot/issues/13)). הפקודה קוראת מקובץ ההגדרות של ה-Run איזה שחקן הוא אימן, טוענת את המשקלים של ה-Milestone לרשת מהסוג שלו, ומשחקת בשחקן החמדן, שבוחר בכל Step את ה-Action עם ה-Q הגבוה ביותר, על ה-CPU. שורת הסיכום אומרת את ה-Step של ה-Milestone, ו-`--output FILE` עובד כמו ב-Scripted player. הפקודה אף פעם לא כותבת ל-`evaluations.jsonl` של ה-Run, וגם מסרבת לקבל אותו ב-`--output`, כדי שלא תשנה את ה-Milestone שה-Run בוחר ([#17](https://github.com/sela27/pong_ai_bot/issues/17)). ל-Milestone של סביבת בדיקה אין Evaluation, כי אין בה ניקוד.
@@ -132,4 +132,6 @@ uv run pong choose-width
 
 ## רשימות בדיקה
 
+- [לפני Run](docs/checklists/before-a-run.md): לפני כל Run חדש, של ה-Position learner או של ה-Agent. זה שער.
+- [‏Run בריא](docs/checklists/healthy-run.md): בזמן כל Run, מול הגרפים ב-TensorBoard, וכשמאבחנים Run שנכשל.
 - [בדיקת החלון בעין](docs/checklists/window.md): אחרי כל שינוי בחלון.
