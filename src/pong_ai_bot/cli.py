@@ -219,6 +219,7 @@ def _train(args: argparse.Namespace) -> int:
     # Only here: PyTorch takes seconds to import, and the other commands don't
     # need it.
     import torch
+    from torch.utils.tensorboard import SummaryWriter
 
     from pong_ai_bot.keep_awake import keep_windows_awake
     from pong_ai_bot.learner import Learner, LearnerSettings
@@ -261,6 +262,15 @@ def _train(args: argparse.Namespace) -> int:
         settings=LearnerSettings.of_run(settings),
         seed=args.seed,
     )
-    train_run(run, player.make_env(), learner, stay_awake=keep_windows_awake)
+    # The graphs go in the Run's directory, so that one TensorBoard on the Runs'
+    # directory shows every Run.
+    with SummaryWriter(log_dir=str(run.path)) as writer:
+        train_run(
+            run,
+            player.make_env(),
+            learner,
+            stay_awake=keep_windows_awake,
+            writer=writer,
+        )
     print(f"The Run reached its Budget, {settings.budget:,} Steps.")
     return 0

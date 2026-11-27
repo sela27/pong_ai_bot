@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 
-from pong_ai_bot.run_settings import Loss
+from pong_ai_bot.run_settings import Loss, RunSettings
 from pong_ai_bot.training import Transition
 
 if TYPE_CHECKING:
@@ -162,3 +162,64 @@ def test_an_update_moves_the_weight_by_the_mse_loss_adam_s_eps_and_the_clipping(
     assert weight == pytest.approx(weight_after, abs=1e-6), (
         f"the weight after the update is {weight:.6f}"
     )
+
+
+@pytest.mark.slow
+def test_learning_gives_the_loss_of_the_update_made_and_none_before_the_first() -> None:
+    import torch
+    from torch import nn
+
+    from pong_ai_bot.learner import Learner, LearnerSettings
+
+    settings = LearnerSettings(
+        batch_size=1,
+        learning_rate=0.1,
+        adam_eps=1e-8,
+        loss=Loss.MSE,
+        max_gradient_norm=None,
+        update_every=1,
+        replay_buffer_size=2,
+        fill_steps=2,
+        target_copy_every=1_000,
+        discount=0.99,
+        double_dqn=True,
+    )
+    # One Action, whose Q is the weight times the input.
+    network = nn.Linear(1, 1, bias=False)
+    with torch.no_grad():
+        network.weight.zero_()
+    learner = Learner(network, actions=1, stack_length=1, settings=settings, seed=1)
+    # A Reward of +1, and the Game ends: the target is 1.
+    transition = Transition(INPUT, 0, 1.0, INPUT, True, False)
+
+    # The replay buffer isn't filled yet: no update.
+    assert learner.learn(transition) is None
+    # The first update: the MSE loss of a Q of 0, the weight times the input,
+    # against the target of 1, (0 - 1)².
+    assert learner.learn(transition) == pytest.approx(1.0)
+
+
+@pytest.mark.slow
+def test_the_learner_gives_its_network_s_q_of_each_action_for_a_batch_of_inputs() -> (
+    None
+):
+    import torch
+    from torch import nn
+
+    from pong_ai_bot.learner import Learner, LearnerSettings
+
+    # Two Actions, whose Q are 2 and -3 times the input.
+    network = nn.Linear(1, 2, bias=False)
+    with torch.no_grad():
+        network.weight.copy_(torch.tensor([[2.0], [-3.0]]))
+    learner = Learner(
+        network,
+        actions=2,
+        stack_length=1,
+        settings=LearnerSettings.of_run(RunSettings()),
+        seed=1,
+    )
+
+    q = learner.q_values(np.array([[1.0], [0.5]], np.float32))
+
+    assert q.tolist() == [[2.0, -3.0], [1.0, -1.5]]

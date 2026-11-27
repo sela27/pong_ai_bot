@@ -119,19 +119,30 @@ class Learner:
             self._player, observation, epsilon, actions=self._actions, rng=self._rng
         )
 
-    def learn(self, transition: Transition) -> None:
+    def learn(self, transition: Transition) -> float | None:
         """Keep `transition`, update the network if its settings say so, and then
-        copy it to the target network if they say so."""
+        copy it to the target network if they say so.
+
+        It gives the loss of the update, before the update, or None if it made
+        none.
+        """
         self._replay.add(transition)
         self._steps_given += 1
         settings = self._settings
+        loss = None
         if (
             len(self._replay) >= settings.fill_steps
             and self._steps_given % settings.update_every == 0
         ):
-            self._update()
+            loss = self._update()
         if self._steps_given % settings.target_copy_every == 0:
             self._target_network.load_state_dict(self._network.state_dict())
+        return loss
+
+    def q_values(self, observations: npt.ArrayLike) -> npt.NDArray[np.float32]:
+        """The Q of each Action, by the network now, for each of a batch of inputs:
+        one row for each input, in the batch's order."""
+        return self._player.q_values(observations)
 
     def state_dict(self) -> dict[str, Any]:
         """The learner's state now: the network's weights, the target network's,
@@ -165,7 +176,9 @@ class Learner:
         self._rng.bit_generator.state = state["rng"]
         self._steps_given = state["steps_given"]
 
-    def _update(self) -> None:
+    def _update(self) -> float:
+        """Update the network from a random batch, and give the batch's loss
+        before the update."""
         batch = self._replay.sample(self._settings.batch_size, self._rng)
         batch_targets = targets(
             batch,
@@ -190,6 +203,7 @@ class Learner:
                 self._network.parameters(), self._settings.max_gradient_norm
             )
         self._optimizer.step()
+        return loss.item()
 
 
 _LOSSES: dict[Loss, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] = {

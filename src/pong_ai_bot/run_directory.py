@@ -9,7 +9,8 @@ was created, its player, its short name and its seed, such as
 In it, a Run saves its full checkpoints, of which only the latest are kept, and its
 Milestones, kept for good, each a new file named by its Step, such as
 milestone_000500000.pt. What they hold is up to the training loop. The directory
-also records the Run's one Confirmation (#16).
+also keeps the fixed inputs of the Run's Q graph, so that a resumed Run graphs the
+same ones (#17), and records the Run's one Confirmation (#16).
 """
 
 import json
@@ -24,6 +25,9 @@ from enum import StrEnum
 from pathlib import Path
 from typing import BinaryIO
 
+import numpy as np
+import numpy.typing as npt
+
 from pong_ai_bot.evaluation import Evaluation, GameResult, SeedSet
 from pong_ai_bot.opponent import DEFAULT_OFFSET_WIDTH
 from pong_ai_bot.run_settings import Loss, RunSettings
@@ -36,6 +40,9 @@ SETTINGS_FILE = "settings.json"
 
 CONFIRMATION_FILE = "confirmation.json"
 """The record of the Run's Confirmation, in its directory, once it has had one."""
+
+Q_GRAPH_INPUTS_FILE = "q_graph_inputs.npz"
+"""The fixed inputs of the Run's Q graph, in its directory."""
 
 SEED_LIMIT = min(seed_set.seeds.start for seed_set in SeedSet)
 """Every Run's seed is below this, 1,000,000: the Evaluation's seeds start here, so
@@ -323,6 +330,26 @@ class RunDirectory:
             key=lambda saved: (saved.step, saved.kind is Kind.MILESTONE),
             default=None,
         )
+
+    def save_q_graph_inputs(self, inputs: npt.NDArray[np.generic]) -> None:
+        """Save `inputs`, the fixed inputs of the Run's Q graph, one along each
+        place of its first axis, for good.
+
+        They are saved compressed, since the Agent's are stacks of Observations of
+        0 and 255 only, but read back exactly as saved. As with a checkpoint, no
+        one sees the file before it is complete, and it is never replaced: if the
+        Run has its inputs saved already, it fails with a FileExistsError.
+        """
+        _write_new(
+            self.path / Q_GRAPH_INPUTS_FILE,
+            lambda file: np.savez_compressed(file, inputs=inputs),
+        )
+
+    def q_graph_inputs(self) -> npt.NDArray[np.generic]:
+        """The fixed inputs of the Run's Q graph, exactly as saved."""
+        with np.load(self.path / Q_GRAPH_INPUTS_FILE) as saved:
+            inputs: npt.NDArray[np.generic] = saved["inputs"]
+            return inputs
 
     def record_confirmation(self, evaluation: Evaluation, *, step: int) -> None:
         """Record the Run's Confirmation: `evaluation`, on the Confirmation's set,

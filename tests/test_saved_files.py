@@ -1,11 +1,14 @@
 """The files a Run saves in its directory, in a temporary directory: its full
-checkpoints, its Milestones, and the record of its Confirmation."""
+checkpoints, its Milestones, the fixed inputs of its Q graph, and the record of its
+Confirmation."""
 
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import BinaryIO
 
+import numpy as np
+import numpy.typing as npt
 import pytest
 
 from pong_ai_bot.evaluation import Evaluation, GameResult
@@ -190,6 +193,30 @@ def test_an_old_checkpoint_a_reader_has_open_is_deleted_at_a_later_save(
     run.save_checkpoint(200_000, writing(b"at 200000"))
 
     assert [saved.step for saved in run.checkpoints()] == [150_000, 200_000]
+
+
+@pytest.mark.parametrize(
+    "inputs",
+    [
+        # Stacks of four Observations, as the Agent's network takes them: 0 and
+        # 255, in a pattern of their own in each place.
+        np.where(
+            np.arange(3 * 4 * 84 * 84).reshape(3, 4, 84, 84) % 7 == 0, 255, 0
+        ).astype(np.uint8),
+        # Positions, as the Position learner's takes them: no two the same.
+        np.linspace(-0.123456789, 1.0, 5 * 16, dtype=np.float32).reshape(5, 16),
+    ],
+    ids=["observations", "positions"],
+)
+def test_the_q_graph_s_inputs_are_read_back_exactly_as_saved_after_reopening(
+    run: RunDirectory, inputs: npt.NDArray[np.generic]
+) -> None:
+    run.save_q_graph_inputs(inputs)
+
+    read_back = RunDirectory.open(run.path, current_commit=run.commit).q_graph_inputs()
+    assert read_back.dtype == inputs.dtype
+    assert read_back.shape == inputs.shape
+    assert np.array_equal(read_back, inputs)
 
 
 A_CONFIRMATION = Evaluation(

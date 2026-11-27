@@ -65,6 +65,14 @@ uv run pong train --player test-env-1 --name tiny --seed 1 --device cpu --budget
 
 בינתיים השחקנים היחידים הם של ארבע סביבות הבדיקה, `test-env-1` עד `test-env-4`, כדי שסוכן יוכל להריץ Run-ים זעירים בתיקייה זמנית ([#9](https://github.com/sela27/pong_ai_bot/issues/9)).
 
+### לראות את הגרפים
+
+```
+uv run tensorboard --logdir ~/pong_ai_bot_runs
+```
+
+‏TensorBoard אחד על התיקייה הראשית, או על התיקייה ש-`PONG_AI_BOT_RUNS_DIR` מציין, מראה את כל ה-Run-ים יחד, כדי להשוות ביניהם ([#10](https://github.com/sela27/pong_ai_bot/issues/10)). הוא נפתח בדפדפן ב-`http://localhost:6006`, ומתעדכן בזמן שה-Run רץ, באיחור של עד שתי דקות. כל Run כותב את הגרפים לתיקייה שלו, וציר ה-X הוא מונה ה-Step-ים. השמות והתדירויות בטבלה "גרפים" ב-[spec](https://github.com/sela27/pong_ai_bot/issues/17). ‏`train/max_q` מחושב על 1,000 קלטים קבועים, שה-Run אוסף במשחק אקראי לפני Step 0 ושומר בתיקייה שלו.
+
 ### למדוד
 
 ```
