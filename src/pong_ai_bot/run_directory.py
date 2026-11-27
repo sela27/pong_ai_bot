@@ -5,6 +5,11 @@ variable PONG_AI_BOT_RUNS_DIR names another, so a Run is never deleted along wit
 a git worktree. Each Run has a directory of its own, named by the date and time it
 was created, its player, its short name and its seed, such as
 2026-11-27_1430_agent_baseline_seed1.
+
+In it, a Run saves its full checkpoints, of which only the latest are kept, and its
+Milestones, kept for good, each a new file named by its Step, such as
+milestone_000500000.pt. What they hold is up to the training loop. The directory
+also records the Run's one Confirmation (#16).
 """
 
 import json
@@ -12,11 +17,14 @@ import os
 import re
 import subprocess
 import warnings
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, fields
 from datetime import datetime
+from enum import StrEnum
 from pathlib import Path
+from typing import BinaryIO
 
-from pong_ai_bot.evaluation import SeedSet
+from pong_ai_bot.evaluation import Evaluation, GameResult, SeedSet
 from pong_ai_bot.opponent import DEFAULT_OFFSET_WIDTH
 from pong_ai_bot.run_settings import Loss, RunSettings
 
@@ -25,6 +33,9 @@ RUNS_DIR_VARIABLE = "PONG_AI_BOT_RUNS_DIR"
 
 SETTINGS_FILE = "settings.json"
 """The Run's settings file, in its directory."""
+
+CONFIRMATION_FILE = "confirmation.json"
+"""The record of the Run's Confirmation, in its directory, once it has had one."""
 
 SEED_LIMIT = min(seed_set.seeds.start for seed_set in SeedSet)
 """Every Run's seed is below this, 1,000,000: the Evaluation's seeds start here, so
@@ -72,6 +83,62 @@ def checked_out_commit(repository: Path = PACKAGE_DIRECTORY) -> Commit:
 
 class CommitChangedWarning(UserWarning):
     """A Run reopened at another commit than the one it was created at."""
+
+
+class Kind(StrEnum):
+    """What a file a Run saves at a Step holds."""
+
+    CHECKPOINT = "checkpoint"
+    """A full checkpoint, all a Run needs to resume. Only the latest are kept."""
+    MILESTONE = "milestone"
+    """A Milestone, the network's weights alone, kept for good."""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SavedFile:
+    """A file a Run saved at one of its Steps."""
+
+    kind: Kind
+    step: int
+    """The Run's Step the file was saved at."""
+    path: Path
+
+
+class SecondConfirmationError(RuntimeError):
+    """A Run that has had its Confirmation given another (issue #16)."""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Confirmation:
+    """A Run's Confirmation, as its directory recorded it."""
+
+    step: int
+    """The Step of the Milestone confirmed."""
+    evaluation: Evaluation
+    """The Milestone's Evaluation on the Confirmation's set."""
+
+
+def _write_new(path: Path, write: Callable[[BinaryIO], object]) -> None:
+    """Write a new file at `path`, with `write` writing its contents into the file
+    it is given.
+
+    It is written under a temporary name first, and renamed when complete, so no
+    one ever reads it half written. If the writing fails, nothing is left. It never
+    replaces a file, which a reader may have open: on Windows a rename never does,
+    so if there is one at `path` already, it fails with a FileExistsError.
+    """
+    temporary = path.with_name(path.name + ".tmp")
+    try:
+        with temporary.open("wb") as file:
+            write(file)
+            # On disk before the rename, so a crash of the whole machine can't
+            # leave the name on a file that is only half there.
+            file.flush()
+            os.fsync(file.fileno())
+        temporary.rename(path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -202,3 +269,107 @@ class RunDirectory:
                 stacklevel=2,
             )
         return run
+
+    def save_checkpoint(
+        self, step: int, write: Callable[[BinaryIO], object]
+    ) -> SavedFile:
+        """Save a full checkpoint at `step`: `write` writes its contents into the
+        file it is given, as torch.save does.
+
+        No one sees the file before it is complete, and if `write` fails, nothing
+        is left of it. It never replaces a file: if the Run has a checkpoint at
+        `step` already, it fails with a FileExistsError. Only the latest
+        checkpoints are kept, as many as the Run's settings say: the older ones are
+        deleted.
+        """
+        saved = self._save(Kind.CHECKPOINT, step, write)
+        for old in self.checkpoints()[: -self.settings.checkpoints_kept]:
+            try:
+                old.path.unlink()
+            except PermissionError:
+                # Windows can't delete a file a reader has open. An old
+                # checkpoint is only disk space: a later save deletes it.
+                pass
+        return saved
+
+    def save_milestone(
+        self, step: int, write: Callable[[BinaryIO], object]
+    ) -> SavedFile:
+        """Save a Milestone at `step`, kept for good: `write` writes its contents
+        into the file it is given, as torch.save does.
+
+        As with a checkpoint, no one sees the file before it is complete, and if
+        the Run has a Milestone at `step` already, it fails with a FileExistsError.
+        """
+        return self._save(Kind.MILESTONE, step, write)
+
+    def checkpoints(self) -> list[SavedFile]:
+        """The Run's full checkpoints, by Step."""
+        return self._saved(Kind.CHECKPOINT)
+
+    def milestones(self) -> list[SavedFile]:
+        """The Run's Milestones, by Step."""
+        return self._saved(Kind.MILESTONE)
+
+    def newest(self) -> SavedFile | None:
+        """The file saved at the Run's latest Step, a checkpoint or a Milestone, or
+        None before the first.
+
+        At a Step with both, it is the Milestone: it is never deleted, so it is
+        still there when a reader opens it.
+        """
+        return max(
+            self.checkpoints() + self.milestones(),
+            key=lambda saved: (saved.step, saved.kind is Kind.MILESTONE),
+            default=None,
+        )
+
+    def record_confirmation(self, evaluation: Evaluation, *, step: int) -> None:
+        """Record the Run's Confirmation: `evaluation`, on the Confirmation's set,
+        of the Milestone at `step`.
+
+        A Run has one Confirmation, so its set never becomes a set to choose by: if
+        it has had one, it fails with a SecondConfirmationError, and the first one
+        stays recorded.
+        """
+        recorded = self.confirmation()
+        if recorded is not None:
+            raise SecondConfirmationError(
+                f"The Run has had its Confirmation already, of the Milestone at "
+                f"Step {recorded.step:,}; a Run has only one."
+            )
+        line = evaluation.json_line(seed_set=SeedSet.CONFIRMATION, step=step)
+        _write_new(
+            self.path / CONFIRMATION_FILE,
+            lambda file: file.write(line.encode("utf-8") + b"\n"),
+        )
+
+    def confirmation(self) -> Confirmation | None:
+        """The Run's Confirmation, as recorded, or None if it has had none."""
+        path = self.path / CONFIRMATION_FILE
+        if not path.exists():
+            return None
+        record = json.loads(path.read_text(encoding="utf-8"))
+        return Confirmation(
+            step=record["step"],
+            evaluation=Evaluation(
+                games=tuple(GameResult(**game) for game in record["games"])
+            ),
+        )
+
+    def _save(
+        self, kind: Kind, step: int, write: Callable[[BinaryIO], object]
+    ) -> SavedFile:
+        saved = SavedFile(
+            kind=kind, step=step, path=self.path / f"{kind}_{step:09d}.pt"
+        )
+        _write_new(saved.path, write)
+        return saved
+
+    def _saved(self, kind: Kind) -> list[SavedFile]:
+        saved = []
+        for path in self.path.iterdir():
+            match = re.fullmatch(rf"{kind}_(\d+)\.pt", path.name)
+            if match:
+                saved.append(SavedFile(kind=kind, step=int(match[1]), path=path))
+        return sorted(saved, key=lambda file: file.step)
