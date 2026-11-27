@@ -270,9 +270,11 @@ def test_pong_train_runs_a_test_environment_s_tiny_run_to_its_budget(
         milestone_every=20,
     )
     # A Milestone at Step 0, at every multiple of 20, and at the Budget, where the
-    # Run stops; a checkpoint at every multiple of 3.
+    # Run stops; a checkpoint at every multiple of 3, and at each Milestone but
+    # Step 0's.
     assert [saved.step for saved in run.milestones()] == [0, 20, 30]
-    assert [saved.step for saved in run.checkpoints()] == list(range(3, 31, 3))
+    every_3 = list(range(3, 31, 3))
+    assert [saved.step for saved in run.checkpoints()] == sorted([*every_3, 20])
     checkpoints = {saved.step: torch.load(saved.path) for saved in run.checkpoints()}
     last = checkpoints[30]
     assert (last["step"], last["resumes"]) == (30, 0)
@@ -411,8 +413,8 @@ def test_pong_resume_refuses_a_run_with_no_full_checkpoint(
 def test_pong_resume_of_a_run_that_reached_its_budget_plays_nothing_more(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # The Run's end saved a Milestone at its Budget, Step 23, after its latest
-    # checkpoint, at Step 20.
+    # The Run's end saved a full checkpoint and a Milestone at its Budget, Step
+    # 23, off its checkpoints every 5 Steps.
     run = RunDirectory.create(
         player="test-env-1",
         name="tiny",
@@ -420,7 +422,11 @@ def test_pong_resume_of_a_run_that_reached_its_budget_plays_nothing_more(
         settings=RunSettings(budget=23, checkpoint_every=5),
         commit=A_COMMIT,
     )
-    for save, step in [(run.save_checkpoint, 20), (run.save_milestone, 23)]:
+    for save, step in [
+        (run.save_checkpoint, 20),
+        (run.save_checkpoint, 23),
+        (run.save_milestone, 23),
+    ]:
         save(step, lambda file: file.write(b"saved"))
     files = sorted(run.path.iterdir())
 
@@ -530,11 +536,12 @@ def test_pong_resume_refills_the_buffer_before_learning_on_counting_its_steps(
     run = RunDirectory.open(path)
     # The Step count goes on from 12 to the Budget, with its checkpoints and
     # Milestones, and those after the resume count it.
-    assert [saved.step for saved in run.checkpoints()] == list(range(3, 31, 3))
+    steps = sorted([*range(3, 31, 3), 20])
+    assert [saved.step for saved in run.checkpoints()] == steps
     assert [saved.step for saved in run.milestones()] == [0, 20, 30]
     checkpoints = {saved.step: torch.load(saved.path) for saved in run.checkpoints()}
     assert {step: c["resumes"] for step, c in checkpoints.items()} == {
-        step: 0 if step <= 12 else 1 for step in range(3, 31, 3)
+        step: 0 if step <= 12 else 1 for step in steps
     }
     assert checkpoints[30]["learner"]["steps_given"] == 30
     # The new buffer fills in Steps 13 to 22, so the network learns on only from

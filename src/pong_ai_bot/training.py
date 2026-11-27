@@ -211,12 +211,15 @@ def train_run(
     through `writer`.
 
     The Run saves a Milestone at Step 0, a full checkpoint every so many Steps and
-    a Milestone every so many, as its settings say, and a Milestone at its end. A
-    full checkpoint holds the learner's whole state (its two networks, Adam's
-    state and its random generator's), the Run's Step count, and how many times
-    the Run was resumed, none in a new Run. A Milestone holds the network's
-    weights alone. The learner fills its replay buffer before it learns, and the
-    filling's Steps count toward the Budget like any other.
+    a Milestone every so many, as its settings say, and a Milestone at its end. At
+    every Milestone but Step 0's, it saves a full checkpoint first, if one of every
+    so many doesn't fall there, so that a resume, from its latest, never plays
+    again the Steps up to a Milestone it saved (#17). A full checkpoint holds the
+    learner's whole state (its two networks, Adam's state and its random
+    generator's), the Run's Step count, and how many times the Run was resumed,
+    none in a new Run. A Milestone holds the network's weights alone. The learner
+    fills its replay buffer before it learns, and the filling's Steps count toward
+    the Budget like any other.
 
     Before Step 0, the Run saves the fixed inputs of its Q graph, from a Game of
     random Actions against `env`.
@@ -459,9 +462,12 @@ def _play_run(
         return step % settings.milestone_every == 0 or step == settings.budget
 
     def after_step(step: int) -> None:
-        if step % settings.checkpoint_every == 0:
+        # The checkpoint first: a stop between the two leaves its Milestone to
+        # the resume, which saves it from the checkpoint's network.
+        milestone = has_a_milestone(step)
+        if milestone or step % settings.checkpoint_every == 0:
             save_checkpoint(step)
-        if has_a_milestone(step):
+        if milestone:
             save_milestone(step)
 
     # The Milestone of Step 0, and on a resume the one of the checkpoint's Step,
@@ -476,9 +482,8 @@ def _play_run(
         if milestone.step not in measured:
             measure(milestone)
     # A Milestone at the Budget is saved only at the Run's end, so with one the
-    # Run trains no more, as when a crash stopped it before its Confirmation, its
-    # latest checkpoint before its end. The same goes once its training stopped at
-    # a Milestone of at least stop_mean.
+    # Run trains no more, as when a crash stopped it before its Confirmation. The
+    # same goes once its training stopped at a Milestone of at least stop_mean.
     trained = run.milestone(settings.budget) is not None
     graphs.begin(start, resumes=resumes)
     stopped_at = train(

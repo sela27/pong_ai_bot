@@ -203,7 +203,7 @@ def test_a_run_evaluates_each_milestone_once_as_it_is_saved() -> None:
     assert means == {0: -20.0, 10: -10.0, 20: 0.0, 23: 3.0}
     # The Run learns from its own 23 Steps alone, with its files at their Steps.
     assert learner.given == 23
-    assert [saved.step for saved in run.checkpoints()] == [5, 10, 15, 20]
+    assert [saved.step for saved in run.checkpoints()] == [5, 10, 15, 20, 23]
     assert [saved.step for saved in run.milestones()] == [0, 10, 20, 23]
 
 
@@ -322,10 +322,11 @@ def test_each_evaluation_graphs_its_mean_min_and_cut_off_at_its_milestone_s_step
 @pytest.mark.parametrize(
     ("at", "checkpoints", "milestones"),
     [
-        # At the Run's start, its end, and in between.
+        # At the Run's start, its end, and in between. Each Milestone but Step
+        # 0's has a checkpoint at its Step anyway.
         (0, [0], [0]),
         (10, [4, 8, 10], [0, 10]),
-        (13, [4, 8, 12, 13], [0, 10, 13]),
+        (13, [4, 8, 10, 12, 13], [0, 10, 13]),
     ],
 )
 def test_ctrl_c_in_an_evaluation_abandons_it_and_stops_the_run_with_a_checkpoint(
@@ -613,7 +614,7 @@ def test_ctrl_c_in_the_confirmation_abandons_it_and_stops_the_run_with_a_checkpo
 
 def test_a_run_saves_its_files_at_step_0_every_so_many_steps_and_its_budget() -> None:
     # Checkpoints at every multiple of 5 up to 23, and Milestones at 0, at every
-    # multiple of 10, and at the Run's end, 23.
+    # multiple of 10, and at the Run's end, 23, with a checkpoint there too.
     run = new_run(
         RunSettings(
             budget=23, checkpoint_every=5, checkpoints_kept=10, milestone_every=10
@@ -623,14 +624,18 @@ def test_a_run_saves_its_files_at_step_0_every_so_many_steps_and_its_budget() ->
 
     train_run(run, ConstantRewardEnv(), learner, stay_awake=Awake(), writer=NoGraphs())
 
-    assert [saved.step for saved in run.checkpoints()] == [5, 10, 15, 20]
+    assert [saved.step for saved in run.checkpoints()] == [5, 10, 15, 20, 23]
     assert [saved.step for saved in run.milestones()] == [0, 10, 20, 23]
     # The Run stops at its Budget: 23 Steps, each learned from.
     assert learner.given == 23
 
 
 def test_a_checkpoint_holds_the_learner_s_state_its_step_and_no_resumes() -> None:
-    run = new_run(RunSettings(budget=12, checkpoint_every=5, milestone_every=10))
+    run = new_run(
+        RunSettings(
+            budget=12, checkpoint_every=5, checkpoints_kept=10, milestone_every=10
+        )
+    )
 
     train_run(
         run,
@@ -640,13 +645,12 @@ def test_a_checkpoint_holds_the_learner_s_state_its_step_and_no_resumes() -> Non
         writer=NoGraphs(),
     )
 
-    first, second = run.checkpoints()
-    assert torch.load(first.path) == {"learner": {"given": 5}, "step": 5, "resumes": 0}
-    assert torch.load(second.path) == {
-        "learner": {"given": 10},
-        "step": 10,
-        "resumes": 0,
-    }
+    # Every 5 Steps, and at the Budget.
+    assert [torch.load(saved.path) for saved in run.checkpoints()] == [
+        {"learner": {"given": 5}, "step": 5, "resumes": 0},
+        {"learner": {"given": 10}, "step": 10, "resumes": 0},
+        {"learner": {"given": 12}, "step": 12, "resumes": 0},
+    ]
 
 
 def test_a_milestone_holds_the_network_s_weights_after_its_step() -> None:
@@ -876,9 +880,9 @@ def test_a_resumed_run_plays_on_from_its_latest_checkpoint_to_its_budget() -> No
     # The learner takes on its state of Step 7, and learns from Steps 8 to 12.
     assert stopped == RunStop(step=12, by_ctrl_c=False)
     assert learner.given == 12
-    # The Step count goes on from 7: a checkpoint at Step 10, and Milestones at 10
-    # and at the Budget.
-    assert [saved.step for saved in run.checkpoints()] == [7, 10]
+    # The Step count goes on from 7: a checkpoint at Step 10 and at the Budget,
+    # the latest two kept, and Milestones at 10 and at the Budget.
+    assert [saved.step for saved in run.checkpoints()] == [10, 12]
     assert [saved.step for saved in run.milestones()] == [0, 10, 12]
 
 
@@ -909,8 +913,8 @@ def test_each_resume_counts_one_more_in_the_run_s_checkpoints() -> None:
     )
 
     assert torch.load(run.checkpoints()[-1].path) == {
-        "learner": {"given": 10},
-        "step": 10,
+        "learner": {"given": 12},
+        "step": 12,
         "resumes": 2,
     }
 
@@ -1069,9 +1073,10 @@ def test_a_resume_measures_first_the_milestone_whose_evaluation_was_abandoned(
 def test_a_run_stopped_before_its_confirmation_has_it_on_resume_and_no_step(
     means: dict[int, float], end: int, interruption: str
 ) -> None:
-    # Checkpoints every 4 Steps, and Milestones every 10, and at the Budget, 23. A
-    # crash leaves the latest checkpoint before the Run's end, and Ctrl+C one at
-    # it. Either way, the Milestone of Step 10 is the best.
+    # Checkpoints every 4 Steps, and Milestones every 10, and at the Budget, 23,
+    # each with a checkpoint at its Step. A crash, or Ctrl+C, in the Confirmation
+    # leaves the latest checkpoint at the Run's end. Either way, the Milestone of
+    # Step 10 is the best.
     run = new_run(
         RunSettings(
             budget=23, checkpoint_every=4, checkpoints_kept=10, milestone_every=10
@@ -1198,3 +1203,53 @@ def test_a_resume_saves_and_measures_first_a_milestone_a_crash_left_unsaved() ->
     assert evaluation.evaluated == [10, 12]
     assert evaluation.given_then == [10, 12]
     assert list(run.evaluations()) == [0, 10, 12]
+
+
+@pytest.mark.parametrize("budget", [70, 90], ids=["budget-off-checkpoints", "on"])
+def test_a_crash_after_a_milestone_off_the_checkpoints_leaves_a_run_that_resumes(
+    budget: int,
+) -> None:
+    # Checkpoints every 30 Steps and Milestones every 50: the Milestone of Step
+    # 50 falls on no checkpoint of every 30. A second Ctrl+C in Step 56 stops the
+    # Run at once, as a crash would. No Milestone's mean, its Step minus 20, stops
+    # the Run before its Budget.
+    run = new_run(
+        RunSettings(
+            budget=budget, checkpoint_every=30, milestone_every=50, stop_mean=1_000
+        )
+    )
+    with pytest.raises(KeyboardInterrupt):
+        train_run(
+            run,
+            ConstantRewardEnv(),
+            CtrlCLearner(at=56, presses=2),
+            stay_awake=Awake(),
+            writer=NoGraphs(),
+            evaluation=FakeEvaluation(),
+        )
+    # The Run resumes from a full checkpoint at the Milestone, never before it:
+    # it never plays again the Steps up to a Milestone saved, and of the graphs'
+    # points, its resume drops only those after the checkpoint, none of them a
+    # Milestone's Evaluation.
+    assert run.checkpoints()[-1].step == 50
+    run = RunDirectory.open(run.path, current_commit=A_COMMIT)
+    learner = CountingLearner()
+    evaluation = FakeEvaluation()
+
+    stopped = resume_run(
+        run,
+        ConstantRewardEnv(),
+        learner,
+        stay_awake=Awake(),
+        writer=NoGraphs(),
+        evaluation=evaluation,
+    )
+
+    assert stopped == RunStop(step=budget, by_ctrl_c=False)
+    assert learner.given == budget
+    assert evaluation.evaluated == [budget]
+    assert [saved.step for saved in run.milestones()] == [0, 50, budget]
+    assert list(run.evaluations()) == [0, 50, budget]
+    # And a full checkpoint at the Budget, the Run's last Step, whether one of
+    # every 30 falls on it or not.
+    assert run.checkpoints()[-1].step == budget
