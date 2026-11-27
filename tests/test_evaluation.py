@@ -15,7 +15,13 @@ import numpy.typing as npt
 import pytest
 
 from pong_ai_bot.environment import Action, PongEnv
-from pong_ai_bot.evaluation import GameResult, SeedSet, Summary, evaluate
+from pong_ai_bot.evaluation import (
+    EvaluationStopped,
+    GameResult,
+    SeedSet,
+    Summary,
+    evaluate,
+)
 from pong_ai_bot.game import Score
 
 NO_POINTS_YET = Score(left=0, right=0)
@@ -109,6 +115,31 @@ def test_all_the_games_still_going_are_played_together_until_each_ends() -> None
     # One call for each Step: the Game of seed 2 ends in the 1st, and that of 3 in
     # the 2nd.
     assert player.batches == [[1, 2, 3], [1, 3], [1]]
+
+
+def test_an_evaluation_stops_with_no_result_before_the_step_stop_says() -> None:
+    # As Ctrl+C abandons a Run's Evaluation (#17): `stop` says yes before the
+    # 3rd Step, and the Games of seed 1 and 3 have 3 and 4 Steps.
+    player = Watching()
+    make_env = ending_as(
+        {
+            1: Ending(3, Score(left=21, right=0)),
+            2: Ending(1, Score(left=21, right=0)),
+            3: Ending(4, Score(left=21, right=0)),
+        }
+    )
+    asked = 0
+
+    def stop() -> bool:
+        nonlocal asked
+        asked += 1
+        return asked == 3
+
+    with pytest.raises(EvaluationStopped):
+        evaluate(player, make_env, [1, 2, 3], stop=stop)
+
+    # Two Steps played, and the third never asked for.
+    assert player.batches == [[1, 2, 3], [1, 3]]
 
 
 class InfoReading(Staying):

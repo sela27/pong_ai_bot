@@ -1,7 +1,8 @@
 """The files a Run saves in its directory, in a temporary directory: its full
-checkpoints, its Milestones, the fixed inputs of its Q graph, and the record of its
-Confirmation."""
+checkpoints, its Milestones, the fixed inputs of its Q graph, and the records of its
+Milestones' Evaluations and of its Confirmation."""
 
+import json
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -11,7 +12,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
-from pong_ai_bot.evaluation import Evaluation, GameResult
+from pong_ai_bot.evaluation import Evaluation, GameResult, SeedSet
 from pong_ai_bot.run_directory import (
     Commit,
     Confirmation,
@@ -217,6 +218,38 @@ def test_the_q_graph_s_inputs_are_read_back_exactly_as_saved_after_reopening(
     assert read_back.dtype == inputs.dtype
     assert read_back.shape == inputs.shape
     assert np.array_equal(read_back, inputs)
+
+
+def regular_evaluation(*margins: int) -> Evaluation:
+    """An Evaluation on the regular set, of a Game for each Score margin, rather
+    than 100."""
+    return Evaluation(
+        games=tuple(
+            GameResult(seed=1_000_000 + game, score_margin=margin, cut_off=False)
+            for game, margin in enumerate(margins)
+        )
+    )
+
+
+def test_a_new_run_has_no_evaluation(run: RunDirectory) -> None:
+    assert run.evaluations() == {}
+
+
+def test_each_milestone_s_evaluation_is_a_line_of_its_file_read_back_by_its_step(
+    run: RunDirectory,
+) -> None:
+    first, second = regular_evaluation(-21, -19), regular_evaluation(3, 5)
+
+    run.record_evaluation(first, step=0)
+    run.record_evaluation(second, step=500_000)
+
+    lines = (run.path / "evaluations.jsonl").read_text(encoding="utf-8").splitlines()
+    assert [json.loads(line) for line in lines] == [
+        json.loads(first.json_line(seed_set=SeedSet.REGULAR, step=0)),
+        json.loads(second.json_line(seed_set=SeedSet.REGULAR, step=500_000)),
+    ]
+    reopened = RunDirectory.open(run.path, current_commit=run.commit)
+    assert reopened.evaluations() == {0: first, 500_000: second}
 
 
 A_CONFIRMATION = Evaluation(

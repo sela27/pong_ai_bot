@@ -63,7 +63,9 @@ uv run pong train --player test-env-1 --name tiny --seed 1 --device cpu --budget
 
 בהתחלה הפקודה מדפיסה על איזה מכשיר היא רצה, ומסרבת לרוץ על ה-CPU בלי `--device cpu` ([#11](https://github.com/sela27/pong_ai_bot/issues/11)). ה-buffer מתמלא לפני הלמידה, וה-Step-ים של המילוי נספרים ב-Budget ([#14](https://github.com/sela27/pong_ai_bot/issues/14)). ‏checkpoint מלא נכתב כל 50,000 Step-ים, ו-Milestone ב-Step 0, כל 500,000 Step-ים ובסוף ה-Run, שנעצר ב-Budget. בזמן שה-Run רץ, Windows לא נרדם ([#10](https://github.com/sela27/pong_ai_bot/issues/10)).
 
-‏`Ctrl+C` אחד מסיים את ה-Step הנוכחי, כותב checkpoint מלא באותו Step ויוצא, בלי Milestone, כי ה-Run לא נגמר. ‏`Ctrl+C` שני יוצא מיד, בלי checkpoint של ה-Step, ואז ה-checkpoint האחרון הוא זה שנכתב לפניו ([#10](https://github.com/sela27/pong_ai_bot/issues/10)). בשני המקרים קוד היציאה הוא 130, כמו של תוכנית שנעצרה ב-`Ctrl+C`.
+בשחקן שיש לו Evaluation, ה-Run מודד כל Milestone ברגע שהיא נכתבת: ב-Step 0, בכל Milestone ובסוף ה-Run. האימון עוצר, ו-100 ה-Game-ים של הסט הרגיל רצים יחד דרך השחקן החמדן, עם מעבר אחד ברשת בכל Step, על המכשיר של האימון. ה-Step-ים שלו לא נספרים ב-Budget, לא נכנסים ל-buffer ולא משנים את ε ([#13](https://github.com/sela27/pong_ai_bot/issues/13)). כל Evaluation מוסיף שורה ל-`evaluations.jsonl` בתיקיית ה-Run, מדפיס שורת סיכום, וכותב את `eval/mean`, ‏`eval/min` ו-`eval/cut_off` ב-Step של ה-Milestone. לשחקנים של סביבות הבדיקה אין Evaluation, כי אין בהן ניקוד.
+
+‏`Ctrl+C` אחד מסיים את ה-Step הנוכחי, כותב checkpoint מלא באותו Step ויוצא, בלי Milestone, כי ה-Run לא נגמר. באמצע Evaluation הוא זונח אותו, והוא לא נרשם: ה-Run נעצר עם checkpoint מלא ב-Step של ה-Milestone, גם ב-Budget, וההמשך מודד אותה קודם. ‏`Ctrl+C` שני יוצא מיד, בלי checkpoint של ה-Step, ואז ה-checkpoint האחרון הוא זה שנכתב לפניו ([#10](https://github.com/sela27/pong_ai_bot/issues/10)). בשני המקרים קוד היציאה הוא 130, כמו של תוכנית שנעצרה ב-`Ctrl+C`.
 
 בינתיים השחקנים היחידים הם של ארבע סביבות הבדיקה, `test-env-1` עד `test-env-4`, כדי שסוכן יוכל להריץ Run-ים זעירים בתיקייה זמנית ([#9](https://github.com/sela27/pong_ai_bot/issues/9)).
 
@@ -75,7 +77,9 @@ uv run pong resume ~/pong_ai_bot_runs/2026-11-27_1430_test-env-1_tiny_seed1 --de
 
 המשך של Run שנעצר, ב-`Ctrl+C` או בקריסה, כאותו Run ([#10](https://github.com/sela27/pong_ai_bot/issues/10)). הפקודה מקבלת רק את תיקיית ה-Run: ההגדרות נקראות מקובץ ההגדרות שלה, ואי אפשר לשנות אותן. אם הקוד ב-commit אחר מזה שה-Run נוצר בו, מוצגת אזהרה, וה-Run ממשיך.
 
-ה-Run ממשיך מה-checkpoint המלא האחרון, עם Game חדש. מונה ה-Step-ים ממשיך משם, ו-ε איתו, ו-`run/resumes` עולה ב-1. ה-buffer לא נשמר, ולכן buffer חדש מתמלא במדיניות הנוכחית לפני שהלמידה חוזרת, וה-Step-ים של המילוי נספרים ב-Budget ([#14](https://github.com/sela27/pong_ai_bot/issues/14)). מה שנכתב לגרפים אחרי ה-checkpoint נמחק מ-TensorBoard, כדי שהקווים לא יחזרו אחורה. ‏Run שהגיע ל-Budget לא ממשיך, כי אין מה להמשיך. ‏Run שנעצר לפני ה-checkpoint הראשון לא ממשיך: מתחילים Run חדש.
+ה-Run ממשיך מה-checkpoint המלא האחרון, עם Game חדש. מונה ה-Step-ים ממשיך משם, ו-ε איתו, ו-`run/resumes` עולה ב-1. ה-buffer לא נשמר, ולכן buffer חדש מתמלא במדיניות הנוכחית לפני שהלמידה חוזרת, וה-Step-ים של המילוי נספרים ב-Budget ([#14](https://github.com/sela27/pong_ai_bot/issues/14)). מה שנכתב לגרפים אחרי ה-checkpoint נמחק מ-TensorBoard, כדי שהקווים לא יחזרו אחורה. ‏Run שהגיע ל-Budget, וה-Milestone האחרונה שלו נמדדה, לא ממשיך, כי אין מה להמשיך. ‏Run שנעצר לפני ה-checkpoint הראשון לא ממשיך: מתחילים Run חדש.
+
+לפני ה-Step הראשון של ההמשך, ה-Run מודד כל Milestone שנכתבה ולא נמדדה, למשל כש-`Ctrl+C` זנח את ה-Evaluation שלה. אם עצירה בין ה-checkpoint ל-Milestone של אותו Step השאירה את ה-Milestone לא כתובה, ההמשך כותב אותה מהרשת שב-checkpoint, ומודד אותה.
 
 כמו `pong train`, היא מדפיסה על איזה מכשיר היא רצה ומסרבת לרוץ על ה-CPU בלי `--device cpu`, ‏Windows לא נרדם בזמן שה-Run רץ, ו-`Ctrl+C` עוצר אותו באותה צורה.
 

@@ -12,6 +12,9 @@ the player is +3.
 
 The seeds are a parameter, so a fast test can play a few Games, but there are two
 fixed sets of them: the regular set, and the Confirmation's.
+
+An Evaluation can be abandoned before its end, as Ctrl+C abandons one in a Run: it
+then has no result at all (#17).
 """
 
 import json
@@ -143,9 +146,24 @@ class Evaluation:
         )
 
 
-def evaluate(player: Player, make_env: EnvMaker, seeds: Iterable[int]) -> Evaluation:
+class EvaluationStopped(Exception):
+    """An Evaluation abandoned before its end, by the `stop` it was given. It has
+    no result."""
+
+
+def evaluate(
+    player: Player,
+    make_env: EnvMaker,
+    seeds: Iterable[int],
+    *,
+    stop: Callable[[], bool] | None = None,
+) -> Evaluation:
     """Play `player` one Game for each seed, all together, in environments from
-    `make_env` reset with that seed."""
+    `make_env` reset with that seed.
+
+    Before each Step, `stop`, if given, says whether to abandon the Evaluation
+    there instead, with an EvaluationStopped.
+    """
     seeds = list(seeds)
     envs = [make_env() for _ in seeds]
     observations: list[Any] = []
@@ -157,6 +175,8 @@ def evaluate(player: Player, make_env: EnvMaker, seeds: Iterable[int]) -> Evalua
     results: dict[int, GameResult] = {}
     going = list(range(len(seeds)))
     while going:
+        if stop is not None and stop():
+            raise EvaluationStopped
         actions = player.act(
             np.stack([observations[game] for game in going]),
             [infos[game] for game in going],
