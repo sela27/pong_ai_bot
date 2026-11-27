@@ -224,6 +224,7 @@ def _train(args: argparse.Namespace) -> int:
     # Only here: PyTorch takes seconds to import, and the other commands don't
     # need it.
     import torch
+    from torch.utils.tensorboard import SummaryWriter
 
     from pong_ai_bot.keep_awake import keep_windows_awake
     from pong_ai_bot.learner import Learner, LearnerSettings
@@ -272,9 +273,17 @@ def _train(args: argparse.Namespace) -> int:
         flush=True,
     )
     try:
-        stopped_at = train_run(
-            run, player.make_env(), learner, stay_awake=keep_windows_awake
-        )
+        # The graphs go in the Run's directory, so that one TensorBoard on the
+        # Runs' directory shows every Run. However the Run stops, the writer is
+        # closed, with all it was given written.
+        with SummaryWriter(log_dir=str(run.path)) as writer:
+            stopped_at = train_run(
+                run,
+                player.make_env(),
+                learner,
+                stay_awake=keep_windows_awake,
+                writer=writer,
+            )
     except KeyboardInterrupt:
         print("Stopped at once, with no checkpoint of the Step.", file=sys.stderr)
         return _STOPPED_BY_CTRL_C

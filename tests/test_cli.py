@@ -288,13 +288,16 @@ def test_ctrl_c_stops_pong_train_after_its_step_with_a_full_checkpoint(
     import torch
 
     from pong_ai_bot.test_environments import ConstantRewardEnv
+    from pong_ai_bot.training import Q_GRAPH_INPUTS
 
     runs = tmp_path / "runs"
     monkeypatch.setenv("PONG_AI_BOT_RUNS_DIR", str(runs))
     # Ctrl+C is pressed while the environment plays the Run's Step 12, without a
     # real signal: Python calls the handler of SIGINT when Ctrl+C is pressed.
+    # Before Step 0, the Run plays a Game of random Actions for its Q graph's
+    # inputs, a Step for each.
     play_step = ConstantRewardEnv.step
-    steps_played = 0
+    steps_played = -Q_GRAPH_INPUTS
 
     def step_pressing_ctrl_c_in_step_12(
         env: ConstantRewardEnv, action: int
