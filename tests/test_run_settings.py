@@ -27,3 +27,35 @@ def test_the_defaults_are_the_spec_s_table() -> None:
     assert settings.milestone_every == 500_000
     assert settings.stop_mean == 19.0
     assert settings.confirmation_gate == 18.0
+
+
+def test_a_run_s_settings_give_the_learner_its_own() -> None:
+    # Only the settings, which need no optimizer.
+    from pong_ai_bot.learner import LearnerSettings
+
+    settings = RunSettings(
+        batch_size=8,
+        learning_rate=1e-3,
+        adam_eps=1e-6,
+        max_gradient_norm=10.0,
+        update_every=2,
+        replay_buffer_size=100,
+        fill_steps=10,
+        target_copy_every=50,
+        discount=0.9,
+        double_dqn=False,
+    )
+
+    assert LearnerSettings.of_run(settings) == LearnerSettings(
+        batch_size=8,
+        learning_rate=1e-3,
+        adam_eps=1e-6,
+        loss=Loss.MSE,
+        max_gradient_norm=10.0,
+        update_every=2,
+        replay_buffer_size=100,
+        fill_steps=10,
+        target_copy_every=50,
+        discount=0.9,
+        double_dqn=False,
+    )

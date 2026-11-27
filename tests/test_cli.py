@@ -1,9 +1,11 @@
 """The installed `pong` command."""
 
 import json
+import re
 import shutil
 import subprocess
 import sysconfig
+from dataclasses import fields
 from pathlib import Path
 from typing import Any, SupportsFloat
 
@@ -14,6 +16,8 @@ import pytest
 
 from pong_ai_bot.cli import main
 from pong_ai_bot.game import Score
+from pong_ai_bot.run_directory import RunDirectory
+from pong_ai_bot.run_settings import Loss, RunSettings
 
 
 def run_pong(*args: str) -> subprocess.CompletedProcess[str]:
@@ -125,3 +129,157 @@ def test_pong_evaluate_offers_no_confirmation_set(
     assert exit_.value.code == 0
     help_text = capsys.readouterr().out
     assert "confirmation" not in help_text.lower(), help_text
+
+
+def test_pong_train_refuses_the_cpu_unless_asked_and_creates_no_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # As with a PyTorch build that doesn't support the graphics card: it would
+    # train 20 times slower, with no error (issue #11).
+    runs = tmp_path / "runs"
+    monkeypatch.setenv("PONG_AI_BOT_RUNS_DIR", str(runs))
+    monkeypatch.setattr("torch.cuda.is_available", lambda: False)
+
+    exit_code = main(
+        ["train", "--player", "test-env-1", "--name", "tiny", "--seed", "1"]
+    )
+
+    assert exit_code == 1
+    assert "--device cpu" in capsys.readouterr().err
+    assert not runs.exists()
+
+
+def test_pong_train_has_an_option_for_each_run_setting_with_its_default(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exit_:
+        main(["train", "--help"])
+
+    assert exit_.value.code == 0
+    help_text = capsys.readouterr().out
+    # One setting of each kind, with its default beside it.
+    for option, default in [
+        ("--budget N", "default 10_000_000"),
+        ("--learning-rate X", "default 0.0001"),
+        ("--loss {mse}", "default mse"),
+        ("--max-gradient-norm X", "default none"),
+        ("--double-dqn, --no-double-dqn", "default on"),
+    ]:
+        assert re.search(rf"{re.escape(option)}\s+{default}", help_text), help_text
+    # And every setting, named after it.
+    for field in fields(RunSettings):
+        assert f"--{field.name.replace('_', '-')}" in help_text, help_text
+
+
+@pytest.mark.slow
+def test_pong_train_runs_a_test_environment_s_tiny_run_to_its_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Slow for the learner's optimizer: making one loads a part of PyTorch that
+    # takes about 5 seconds.
+    import torch
+
+    runs = tmp_path / "runs"
+    monkeypatch.setenv("PONG_AI_BOT_RUNS_DIR", str(runs))
+
+    exit_code = main(
+        [
+            "train",
+            "--player",
+            "test-env-1",
+            "--name",
+            "tiny",
+            "--seed",
+            "1",
+            "--device",
+            "cpu",
+            "--budget",
+            "30",
+            "--fill-steps",
+            "10",
+            "--replay-buffer-size",
+            "100",
+            "--batch-size",
+            "4",
+            "--update-every",
+            "1",
+            "--target-copy-every",
+            "5",
+            "--epsilon-decay-steps",
+            "10",
+            "--learning-rate",
+            "1e-3",
+            "--adam-eps",
+            "1e-6",
+            "--max-gradient-norm",
+            "10",
+            "--loss",
+            "mse",
+            "--no-double-dqn",
+            "--checkpoint-every",
+            "3",
+            "--checkpoints-kept",
+            "20",
+            "--milestone-every",
+            "20",
+        ]
+    )
+
+    assert exit_code == 0
+    assert capsys.readouterr().out.splitlines()[0] == "Device: cpu"
+    # A new Run, whose settings file records its changes from the defaults.
+    [path] = runs.iterdir()
+    run = RunDirectory.open(path)
+    assert (run.player, run.name, run.seed) == ("test-env-1", "tiny", 1)
+    assert run.settings == RunSettings(
+        budget=30,
+        fill_steps=10,
+        replay_buffer_size=100,
+        batch_size=4,
+        update_every=1,
+        target_copy_every=5,
+        epsilon_decay_steps=10,
+        learning_rate=1e-3,
+        adam_eps=1e-6,
+        max_gradient_norm=10.0,
+        loss=Loss.MSE,
+        double_dqn=False,
+        checkpoint_every=3,
+        checkpoints_kept=20,
+        milestone_every=20,
+    )
+    # A Milestone at Step 0, at every multiple of 20, and at the Budget, where the
+    # Run stops; a checkpoint at every multiple of 3.
+    assert [saved.step for saved in run.milestones()] == [0, 20, 30]
+    assert [saved.step for saved in run.checkpoints()] == list(range(3, 31, 3))
+    checkpoints = {saved.step: torch.load(saved.path) for saved in run.checkpoints()}
+    last = checkpoints[30]
+    assert (last["step"], last["resumes"]) == (30, 0)
+    assert set(last["learner"]) == {
+        "network",
+        "target_network",
+        "optimizer",
+        "rng",
+        "steps_given",
+    }
+    assert last["learner"]["steps_given"] == 30
+    # The fill's 10 Steps count in the Run's Steps: the network learns first at
+    # Step 10, so at Step 9 it is still the one of Step 0.
+    first_weights = torch.load(run.milestones()[0].path)
+    assert same_weights(checkpoints[9]["learner"]["network"], first_weights)
+    assert not same_weights(checkpoints[12]["learner"]["network"], first_weights)
+    assert same_weights(
+        torch.load(run.milestones()[-1].path), last["learner"]["network"]
+    )
+
+
+def same_weights(weights: dict[str, Any], other: dict[str, Any]) -> bool:
+    import torch
+
+    return weights.keys() == other.keys() and all(
+        torch.equal(weights[name], other[name]) for name in weights
+    )

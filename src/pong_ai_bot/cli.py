@@ -2,10 +2,16 @@
 
 import argparse
 import secrets
+import sys
+from dataclasses import fields
+from enum import Enum
 from pathlib import Path
+from typing import get_args
 
 from pong_ai_bot.environment import PongEnv
 from pong_ai_bot.evaluation import Evaluation, SeedSet
+from pong_ai_bot.learning_players import LEARNING_PLAYERS
+from pong_ai_bot.run_settings import RunSettings
 from pong_ai_bot.scripted_players import SCRIPTED_PLAYERS, evaluate_scripted_player
 from pong_ai_bot.width_choice import choose_width
 
@@ -68,6 +74,35 @@ def main(argv: list[str] | None = None) -> int:
             "the width by the rule of issue #7. Fails if no width passes."
         ),
     )
+    train_command = commands.add_parser(
+        "train",
+        help="start a new Run of a learning player",
+        description=(
+            "Start a new Run of a learning player, from scratch: a Run directory, "
+            "whose settings file records the settings and never changes, and "
+            "training to the Budget. It never starts from another Run's weights. "
+            "It refuses the CPU unless --device cpu asks for it."
+        ),
+    )
+    train_command.add_argument(
+        "--player",
+        required=True,
+        choices=list(LEARNING_PLAYERS),
+        help="the learning player to train; so far only the test environments'",
+    )
+    train_command.add_argument(
+        "--name", required=True, help="the Run's short name, in its directory's name"
+    )
+    train_command.add_argument(
+        "--seed", required=True, type=int, help="the Run's seed, below 1,000,000"
+    )
+    train_command.add_argument(
+        "--device",
+        choices=["cuda", "cpu"],
+        default="cuda",
+        help="where to train: the graphics card, the default, or the CPU",
+    )
+    _add_run_settings(train_command)
     args = parser.parse_args(argv)
 
     if args.command == "play":
@@ -81,6 +116,8 @@ def main(argv: list[str] | None = None) -> int:
         _evaluate(args.scripted, output=args.output)
     elif args.command == "choose-width":
         return _choose_width()
+    elif args.command == "train":
+        return _train(args)
     return 0
 
 
@@ -126,3 +163,104 @@ def _choose_width() -> int:
     print()
     print(choice.report())
     return 0 if choice.chosen is not None else 1
+
+
+def _add_run_settings(command: argparse.ArgumentParser) -> None:
+    """An option for each of a Run's settings, named after it, which changes it
+    from its default."""
+    group = command.add_argument_group(
+        "the Run's settings",
+        "Each changes one of the Run's settings from its default. The settings "
+        "file records them all, and they never change after.",
+    )
+    for field in fields(RunSettings):
+        flag = "--" + field.name.replace("_", "-")
+        default = field.default
+        if field.type is bool:
+            group.add_argument(
+                flag,
+                action=argparse.BooleanOptionalAction,
+                default=argparse.SUPPRESS,
+                help=f"default {'on' if default else 'off'}",
+            )
+            continue
+        # A setting that may be None, such as no clipping, is given as its other
+        # type.
+        [kind] = [
+            kind
+            for kind in get_args(field.type) or [field.type]
+            if kind is not type(None)
+        ]
+        assert isinstance(kind, type)
+        if issubclass(kind, Enum):
+            choices, metavar = list(kind), None
+        else:
+            choices, metavar = None, "N" if kind is int else "X"
+        group.add_argument(
+            flag,
+            type=kind,
+            choices=choices,
+            default=argparse.SUPPRESS,
+            metavar=metavar,
+            help=f"default {_shown(default)}",
+        )
+
+
+def _shown(default: object) -> str:
+    """A setting's default, as `pong train --help` shows it."""
+    if default is None:
+        return "none"
+    if isinstance(default, int):
+        return f"{default:_}"
+    return str(default)
+
+
+def _train(args: argparse.Namespace) -> int:
+    # Only here: PyTorch takes seconds to import, and the other commands don't
+    # need it.
+    import torch
+
+    from pong_ai_bot.keep_awake import keep_windows_awake
+    from pong_ai_bot.learner import Learner, LearnerSettings
+    from pong_ai_bot.run_directory import RunDirectory
+    from pong_ai_bot.training import train_run
+
+    if args.device == "cuda" and not torch.cuda.is_available():
+        print(
+            "PyTorch sees no graphics card, and on the CPU a Run trains about 20 "
+            "times slower. Check that PyTorch is the cu126 build (README), or pass "
+            "--device cpu to train on the CPU on purpose.",
+            file=sys.stderr,
+        )
+        return 1
+    device = torch.device(args.device)
+    if device.type == "cuda":
+        print(f"Device: cuda ({torch.cuda.get_device_name(device)})")
+    else:
+        print("Device: cpu")
+
+    settings = RunSettings(
+        **{
+            field.name: getattr(args, field.name)
+            for field in fields(RunSettings)
+            if hasattr(args, field.name)
+        }
+    )
+    run = RunDirectory.create(
+        player=args.player, name=args.name, seed=args.seed, settings=settings
+    )
+    print(f"The Run's directory: {run.path}", flush=True)
+
+    player = LEARNING_PLAYERS[args.player]
+    # The network's first weights come from the Run's seed too.
+    torch.manual_seed(args.seed)
+    learner = Learner(
+        player.make_network().to(device),
+        actions=player.actions,
+        stack_length=player.stack_length,
+        settings=LearnerSettings.of_run(settings),
+        seed=args.seed,
+    )
+    train_run(run, player.make_env(), learner, stay_awake=keep_windows_awake)
+    print(f"The Run reached its Budget, {settings.budget:,} Steps.")
+    return 0
