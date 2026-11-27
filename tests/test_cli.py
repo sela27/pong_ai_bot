@@ -17,7 +17,7 @@ import pytest
 
 from pong_ai_bot.cli import main
 from pong_ai_bot.game import Score
-from pong_ai_bot.run_directory import RunDirectory
+from pong_ai_bot.run_directory import Commit, RunDirectory, checked_out_commit
 from pong_ai_bot.run_settings import Loss, RunSettings
 
 
@@ -349,6 +349,241 @@ def test_ctrl_c_stops_pong_train_after_its_step_with_a_full_checkpoint(
     assert (last["step"], last["resumes"]) == (12, 0)
     assert last["learner"]["steps_given"] == 12
     assert [saved.step for saved in run.milestones()] == [0]
+
+
+def test_pong_resume_takes_the_run_s_directory_and_no_setting(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A Run's settings never change: they are read from its settings file.
+    with pytest.raises(SystemExit) as exit_:
+        main(["resume", str(tmp_path / "a-run"), "--budget", "20"])
+
+    assert exit_.value.code == 2
+    assert "unrecognized arguments: --budget 20" in capsys.readouterr().err
+
+
+def test_pong_resume_refuses_the_cpu_unless_asked(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # As `pong train` does: a Run trains 20 times slower there.
+    monkeypatch.setattr("torch.cuda.is_available", lambda: False)
+
+    exit_code = main(["resume", str(tmp_path / "a-run")])
+
+    assert exit_code == 1
+    assert "--device cpu" in capsys.readouterr().err
+
+
+A_COMMIT = Commit(
+    sha="0123456789abcdef0123456789abcdef01234567", uncommitted_changes=False
+)
+"""A commit that is never the code's own."""
+
+
+def test_pong_resume_warns_if_the_code_is_at_another_commit_than_the_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("PONG_AI_BOT_RUNS_DIR", str(tmp_path / "runs"))
+    run = RunDirectory.create(player="test-env-1", name="tiny", seed=1, commit=A_COMMIT)
+
+    main(["resume", str(run.path), "--device", "cpu"])
+
+    [warning] = [
+        line
+        for line in capsys.readouterr().err.splitlines()
+        if line.startswith("Warning:")
+    ]
+    code_s_own = checked_out_commit().sha
+    assert A_COMMIT.sha in warning and code_s_own in warning, warning
+
+
+def test_pong_resume_refuses_a_run_with_no_full_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # As a Run that crashed before its first: there is nothing to resume from.
+    monkeypatch.setenv("PONG_AI_BOT_RUNS_DIR", str(tmp_path / "runs"))
+    run = RunDirectory.create(player="test-env-1", name="tiny", seed=1, commit=A_COMMIT)
+
+    exit_code = main(["resume", str(run.path), "--device", "cpu"])
+
+    assert exit_code == 1
+    assert "no full checkpoint" in capsys.readouterr().err
+
+
+def test_pong_resume_of_a_run_that_reached_its_budget_plays_nothing_more(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The Run's end saved a Milestone at its Budget, Step 23, after its latest
+    # checkpoint, at Step 20.
+    monkeypatch.setenv("PONG_AI_BOT_RUNS_DIR", str(tmp_path / "runs"))
+    run = RunDirectory.create(
+        player="test-env-1",
+        name="tiny",
+        seed=1,
+        settings=RunSettings(budget=23, checkpoint_every=5),
+        commit=A_COMMIT,
+    )
+    for save, step in [(run.save_checkpoint, 20), (run.save_milestone, 23)]:
+        save(step, lambda file: file.write(b"saved"))
+    files = sorted(run.path.iterdir())
+
+    exit_code = main(["resume", str(run.path), "--device", "cpu"])
+
+    assert exit_code == 0
+    assert capsys.readouterr().out.splitlines()[-1] == (
+        "The Run reached its Budget, 23 Steps, already: there is nothing to resume."
+    )
+    assert sorted(run.path.iterdir()) == files
+
+
+def train_stopped_by_ctrl_c(
+    monkeypatch: pytest.MonkeyPatch, settings: list[str], *, at: int, presses: int
+) -> Path:
+    """The directory of a new Run of test environment 1 on the CPU, with the
+    options `settings`, that Ctrl+C stopped while the environment played its Step
+    `at`, pressed `presses` times: once, to stop after the Step, or twice, to stop
+    at once, as a crash would."""
+    from pong_ai_bot.run_directory import runs_root
+    from pong_ai_bot.test_environments import ConstantRewardEnv
+    from pong_ai_bot.training import Q_GRAPH_INPUTS
+
+    # As above: before Step 0, the Run plays a Step for each of its Q graph's
+    # inputs.
+    play_step = ConstantRewardEnv.step
+    steps_played = -Q_GRAPH_INPUTS
+
+    def step_pressing_ctrl_c(
+        env: ConstantRewardEnv, action: int
+    ) -> tuple[Any, SupportsFloat, bool, bool, dict[str, Any]]:
+        nonlocal steps_played
+        steps_played += 1
+        if steps_played == at:
+            handler = signal.getsignal(signal.SIGINT)
+            assert callable(handler)
+            for _ in range(presses):
+                handler(signal.SIGINT, None)
+        return play_step(env, action)
+
+    monkeypatch.setattr(ConstantRewardEnv, "step", step_pressing_ctrl_c)
+    run = ["--player", "test-env-1", "--name", "tiny", "--seed", "1"]
+    exit_code = main(["train", *run, "--device", "cpu", *settings])
+    monkeypatch.setattr(ConstantRewardEnv, "step", play_step)
+
+    assert exit_code == 130
+    [path] = runs_root().iterdir()
+    return path
+
+
+@pytest.mark.slow
+def test_pong_resume_refills_the_buffer_before_learning_on_counting_its_steps(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Slow for the learner's optimizer, as above.
+    import torch
+
+    monkeypatch.setenv("PONG_AI_BOT_RUNS_DIR", str(tmp_path / "runs"))
+    # An update every Step, once the buffer holds 10 transitions.
+    path = train_stopped_by_ctrl_c(
+        monkeypatch,
+        [
+            "--budget",
+            "30",
+            "--fill-steps",
+            "10",
+            "--replay-buffer-size",
+            "100",
+            "--batch-size",
+            "4",
+            "--update-every",
+            "1",
+            "--checkpoint-every",
+            "3",
+            "--checkpoints-kept",
+            "20",
+            "--milestone-every",
+            "20",
+        ],
+        at=12,
+        presses=1,
+    )
+    capsys.readouterr()
+
+    exit_code = main(["resume", str(path), "--device", "cpu"])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[0] == "Device: cpu"
+    assert out[-1] == "The Run reached its Budget, 30 Steps."
+    run = RunDirectory.open(path)
+    # The Step count goes on from 12 to the Budget, with its checkpoints and
+    # Milestones, and those after the resume count it.
+    assert [saved.step for saved in run.checkpoints()] == list(range(3, 31, 3))
+    assert [saved.step for saved in run.milestones()] == [0, 20, 30]
+    checkpoints = {saved.step: torch.load(saved.path) for saved in run.checkpoints()}
+    assert {step: c["resumes"] for step, c in checkpoints.items()} == {
+        step: 0 if step <= 12 else 1 for step in range(3, 31, 3)
+    }
+    assert checkpoints[30]["learner"]["steps_given"] == 30
+    # The new buffer fills in Steps 13 to 22, so the network learns on only from
+    # Step 22: at Step 21 it is still the one of the checkpoint.
+    at_the_stop = checkpoints[12]["learner"]["network"]
+    for step in (15, 18, 21):
+        assert same_weights(checkpoints[step]["learner"]["network"], at_the_stop)
+    assert not same_weights(checkpoints[24]["learner"]["network"], at_the_stop)
+
+
+@pytest.mark.slow
+def test_pong_resume_drops_the_graphs_points_written_after_the_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Slow for the learner's optimizer, as above, and for TensorBoard's reader.
+    from tensorboard.backend.event_processing.event_accumulator import (  # type: ignore[import-untyped]
+        EventAccumulator,
+    )
+
+    monkeypatch.setenv("PONG_AI_BOT_RUNS_DIR", str(tmp_path / "runs"))
+    # Stopped at once in Step 12, as by a crash: its latest checkpoint is at
+    # Step 10, and the graphs have points of Step 11 too.
+    path = train_stopped_by_ctrl_c(
+        monkeypatch,
+        [
+            "--budget",
+            "20",
+            "--fill-steps",
+            "10",
+            "--replay-buffer-size",
+            "100",
+            "--batch-size",
+            "4",
+            "--checkpoint-every",
+            "5",
+        ],
+        at=12,
+        presses=2,
+    )
+
+    exit_code = main(["resume", str(path), "--device", "cpu"])
+
+    assert exit_code == 0
+    graphs = EventAccumulator(str(path))
+    graphs.Reload()
+    # Every Game of test environment 1 is a Step long: one point at each Step,
+    # those of the Steps before the checkpoint kept, and none twice.
+    score_margins = [point.step for point in graphs.Scalars("train/score_margin")]
+    assert score_margins == list(range(1, 21)), score_margins
+    resumes = [(point.step, point.value) for point in graphs.Scalars("run/resumes")]
+    assert resumes == [(0, 0.0), (10, 1.0)]
 
 
 def same_weights(weights: dict[str, Any], other: dict[str, Any]) -> bool:
