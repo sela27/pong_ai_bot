@@ -3,7 +3,8 @@ wrapped as it sees it, and its network (#17), and the Evaluation of a learning
 player's Milestones.
 
 They are the Position learner, and the test environments' tiny players, with which
-an agent can run tiny Runs in a temporary directory. The Agent comes later.
+Claude, or another coding assistant, can run tiny Runs in a temporary directory. The
+Agent comes later.
 """
 
 from collections.abc import Callable, Mapping
