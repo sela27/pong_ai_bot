@@ -19,7 +19,6 @@ def test_the_defaults_are_the_spec_s_table() -> None:
     assert settings.update_every == 4
     assert settings.target_copy_every == 1_000
     assert settings.loss is Loss.MSE
-    assert settings.max_gradient_norm is None
     assert settings.discount == 0.99
     assert settings.double_dqn is True
     assert settings.checkpoint_every == 50_000
@@ -37,7 +36,6 @@ def test_a_run_s_settings_give_the_learner_its_own() -> None:
         batch_size=8,
         learning_rate=1e-3,
         adam_eps=1e-6,
-        max_gradient_norm=10.0,
         update_every=2,
         replay_buffer_size=100,
         fill_steps=10,
@@ -51,7 +49,6 @@ def test_a_run_s_settings_give_the_learner_its_own() -> None:
         learning_rate=1e-3,
         adam_eps=1e-6,
         loss=Loss.MSE,
-        max_gradient_norm=10.0,
         update_every=2,
         replay_buffer_size=100,
         fill_steps=10,

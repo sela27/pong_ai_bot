@@ -20,7 +20,7 @@ value.
 import copy
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 import numpy as np
 import numpy.typing as npt
@@ -29,7 +29,7 @@ from torch import nn
 
 from pong_ai_bot.replay_buffer import ReplayBuffer
 from pong_ai_bot.run_settings import Loss, RunSettings
-from pong_ai_bot.training import Transition
+from pong_ai_bot.transition import Transition
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -44,10 +44,7 @@ class LearnerSettings:
     adam_eps: float
     """Adam's eps. Adam's other settings are PyTorch's defaults."""
     loss: Loss
-    """The loss the network is fitted with."""
-    max_gradient_norm: float | None
-    """The norm the gradients are clipped to before each update, or None for no
-    clipping."""
+    """The loss the network is fitted with, with no clipping of the gradients."""
     update_every: int
     """How many Steps from one update of the network to the next."""
     replay_buffer_size: int
@@ -71,7 +68,6 @@ class LearnerSettings:
             learning_rate=settings.learning_rate,
             adam_eps=settings.adam_eps,
             loss=settings.loss,
-            max_gradient_norm=settings.max_gradient_norm,
             update_every=settings.update_every,
             replay_buffer_size=settings.replay_buffer_size,
             fill_steps=settings.fill_steps,
@@ -79,6 +75,31 @@ class LearnerSettings:
             discount=settings.discount,
             double_dqn=settings.double_dqn,
         )
+
+
+class Optimizer(Protocol):
+    """What the learner asks of its optimizer, as PyTorch's optimizers have it."""
+
+    def zero_grad(self) -> None: ...
+
+    def step(self) -> object: ...
+
+    def state_dict(self) -> dict[str, Any]: ...
+
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None: ...
+
+
+OptimizerMaker = Callable[[nn.Module, "LearnerSettings"], Optimizer]
+"""A function that makes the optimizer of a network's weights, by the learner's
+settings."""
+
+
+def adam(network: nn.Module, settings: LearnerSettings) -> Optimizer:
+    """Adam, for `network`'s weights, with the learning rate and eps `settings`
+    give, and PyTorch's defaults for the rest."""
+    return torch.optim.Adam(
+        network.parameters(), lr=settings.learning_rate, eps=settings.adam_eps
+    )
 
 
 class Learner:
@@ -93,19 +114,20 @@ class Learner:
         stack_length: int,
         settings: LearnerSettings,
         seed: int,
+        optimizer: OptimizerMaker = adam,
     ) -> None:
         """A learner for `network`, whose every input has `actions` Actions, and is
         a stack of `stack_length` Observations, as the stack's wrapper gives them.
         It draws its random choices from `seed`. Its target network starts as a
-        copy of `network`."""
+        copy of `network`. It updates `network` with the optimizer `optimizer`
+        makes for it: Adam, unless a test gives a fake, as making Adam takes
+        seconds."""
         self._network = network
         self._target_network = copy.deepcopy(network)
         self._actions = actions
         self._player = GreedyPlayer(network)
         self._settings = settings
-        self._optimizer = torch.optim.Adam(
-            network.parameters(), lr=settings.learning_rate, eps=settings.adam_eps
-        )
+        self._optimizer = optimizer(network, settings)
         self._rng = np.random.default_rng(seed)
         self._replay = ReplayBuffer(
             size=settings.replay_buffer_size, stack_length=stack_length
@@ -188,7 +210,7 @@ class Learner:
             double_dqn=self._settings.double_dqn,
         )
         actions = torch.tensor(
-            [transition.action for transition in batch], device=_device(self._network)
+            [transition.action for transition in batch], device=device_of(self._network)
         )
         q = self._network(
             _inputs([transition.observation for transition in batch], self._network)
@@ -198,10 +220,6 @@ class Learner:
         )
         self._optimizer.zero_grad()
         loss.backward()
-        if self._settings.max_gradient_norm is not None:
-            nn.utils.clip_grad_norm_(
-                self._network.parameters(), self._settings.max_gradient_norm
-            )
         self._optimizer.step()
         return loss.item()
 
@@ -229,7 +247,7 @@ def targets(
     one of its highest Q, and `target_network` gives that Action's Q. Without it,
     the target network's highest Q.
     """
-    device = _device(network)
+    device = device_of(network)
     rewards = torch.tensor(
         [transition.reward for transition in batch], dtype=torch.float32, device=device
     )
@@ -290,10 +308,11 @@ def _inputs(observations: npt.ArrayLike, network: nn.Module) -> torch.Tensor:
     """`network`'s input from a batch of Observations: a list of them, or an array
     with one along each place of its first axis."""
     return torch.as_tensor(
-        np.asarray(observations), dtype=torch.float32, device=_device(network)
+        np.asarray(observations), dtype=torch.float32, device=device_of(network)
     )
 
 
-def _device(network: nn.Module) -> torch.device:
-    """Where `network` is, the CPU or the graphics card: where its inputs go."""
+def device_of(network: nn.Module) -> torch.device:
+    """Where `network` is, the CPU or the graphics card: where its inputs go, and
+    the weights loaded into it."""
     return next(network.parameters()).device

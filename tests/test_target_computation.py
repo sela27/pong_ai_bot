@@ -15,7 +15,7 @@ import torch
 from torch import nn
 
 from pong_ai_bot.learner import targets
-from pong_ai_bot.training import Transition
+from pong_ai_bot.transition import Transition
 
 DISCOUNT = 0.5
 

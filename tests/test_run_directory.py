@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+from helpers import A_COMMIT
 
 import pong_ai_bot
 from pong_ai_bot.run_directory import (
@@ -17,22 +18,9 @@ from pong_ai_bot.run_directory import (
     checked_out_commit,
     runs_root,
 )
-from pong_ai_bot.run_settings import RunSettings
-
-A_COMMIT = Commit(
-    sha="0123456789abcdef0123456789abcdef01234567", uncommitted_changes=False
-)
-"""The commit the tests' Runs are created at, rather than asking git for it."""
+from pong_ai_bot.run_settings import Loss, RunSettings
 
 AT_14_30 = datetime(2026, 11, 27, 14, 30, 5)
-
-
-@pytest.fixture
-def runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """The Runs' directory for one test, a temporary one."""
-    root = tmp_path / "runs"
-    monkeypatch.setenv("PONG_AI_BOT_RUNS_DIR", str(root))
-    return root
 
 
 def test_the_runs_are_kept_in_the_directory_the_environment_variable_names(
@@ -71,7 +59,7 @@ def test_a_new_run_s_directory_is_named_by_its_date_time_player_name_and_seed(
 def test_reopening_a_run_reads_back_everything_its_settings_file_recorded(
     runs: Path,
 ) -> None:
-    settings = RunSettings(budget=200, fill_steps=10, max_gradient_norm=10.0)
+    settings = RunSettings(budget=200, fill_steps=10, learning_rate=1e-3)
     at_a_changed_commit = Commit(
         sha="fedcba9876543210fedcba9876543210fedcba98", uncommitted_changes=True
     )
@@ -89,6 +77,8 @@ def test_reopening_a_run_reads_back_everything_its_settings_file_recorded(
     assert run.path == created.path
     assert (run.player, run.name, run.seed) == ("position-learner", "tiny", 999_999)
     assert run.settings == settings
+    # Each setting of a kind of its own as that kind, not as what JSON keeps.
+    assert run.settings.loss is Loss.MSE
     # The locked width, 100% of half the Paddle's height (#31).
     assert run.opponent_offset_width == 1.0
     assert run.commit == at_a_changed_commit

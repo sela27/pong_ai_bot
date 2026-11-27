@@ -5,29 +5,67 @@ import copy
 import secrets
 import sys
 import warnings
+from collections.abc import Callable, Mapping
 from dataclasses import fields
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, get_args
+from typing import TYPE_CHECKING
 
 from pong_ai_bot.environment import PongEnv
 from pong_ai_bot.evaluation import Evaluation, SeedSet
-from pong_ai_bot.learning_players import LEARNING_PLAYERS, evaluate_milestone
+from pong_ai_bot.learning_players import (
+    LEARNING_PLAYERS,
+    LearningPlayer,
+    evaluate_milestone,
+    milestone_evaluation,
+)
 from pong_ai_bot.run_directory import (
-    EVALUATIONS_FILE,
-    SETTINGS_FILE,
+    InvalidRunError,
+    NotARunError,
     RunDirectory,
     SavedFile,
 )
 from pong_ai_bot.run_settings import RunSettings
-from pong_ai_bot.scripted_players import SCRIPTED_PLAYERS, evaluate_scripted_player
+from pong_ai_bot.scripted_players import (
+    SCRIPTED_PLAYERS,
+    PongMaker,
+    evaluate_scripted_player,
+)
+from pong_ai_bot.training import (
+    ConfirmedRunError,
+    RunOverError,
+    check_not_over,
+    resume_run,
+    train_run,
+)
 from pong_ai_bot.width_choice import choose_width
 
 if TYPE_CHECKING:
     import torch
+    from torch import nn
+
+    from pong_ai_bot.evaluation import EnvMaker
+    from pong_ai_bot.training import MilestoneEvaluation
+
+MilestoneEvaluationMaker = Callable[["nn.Module", "EnvMaker"], "MilestoneEvaluation"]
+"""Makes the Evaluation a Run plays of its Milestones, as `milestone_evaluation`
+does, from the Evaluation's own network and the player's environment."""
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    learning_players: Mapping[str, LearningPlayer] = LEARNING_PLAYERS,
+    make_milestone_evaluation: MilestoneEvaluationMaker = milestone_evaluation,
+    pong: PongMaker = PongEnv,
+) -> int:
+    """Run `pong` with the command line `argv`, sys.argv's unless given, and give
+    its exit code.
+
+    The rest are what it plays, the real ones unless a test gives fakes: the
+    learning players by name, the Evaluation of a Run's Milestones, and the
+    environment the Scripted players' Evaluation plays.
+    """
     parser = argparse.ArgumentParser(
         prog="pong",
         description="A locally built Pong game and a DQN Agent that learns to play it.",
@@ -109,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
     train_command.add_argument(
         "--player",
         required=True,
-        choices=list(LEARNING_PLAYERS),
+        choices=list(learning_players),
         help=(
             "the learning player to train: the Position learner, or a test "
             "environment's; the Agent comes later"
@@ -121,12 +159,7 @@ def main(argv: list[str] | None = None) -> int:
     train_command.add_argument(
         "--seed", required=True, type=int, help="the Run's seed, below 1,000,000"
     )
-    train_command.add_argument(
-        "--device",
-        choices=["cuda", "cpu"],
-        default="cuda",
-        help="where to train: the graphics card, the default, or the CPU",
-    )
+    _add_device_option(train_command)
     _add_run_settings(train_command)
     resume_command = commands.add_parser(
         "resume",
@@ -143,30 +176,53 @@ def main(argv: list[str] | None = None) -> int:
     resume_command.add_argument(
         "run", type=Path, metavar="RUN_DIRECTORY", help="the Run's directory"
     )
-    resume_command.add_argument(
+    _add_device_option(resume_command)
+    args = parser.parse_args(argv)
+
+    try:
+        if args.command == "play":
+            # Only the window needs pygame, so only the window's commands import
+            # it.
+            from pong_ai_bot.window import play_against_the_opponent
+
+            play_against_the_opponent(seed=secrets.randbits(32))
+        elif args.command == "measure-env":
+            return _measure_env()
+        elif args.command == "evaluate":
+            return _evaluate(args, learning_players=learning_players, pong=pong)
+        elif args.command == "choose-width":
+            return _choose_width(pong=pong)
+        elif args.command == "train":
+            return _train(
+                args,
+                learning_players=learning_players,
+                make_milestone_evaluation=make_milestone_evaluation,
+            )
+        elif args.command == "resume":
+            return _resume(
+                args,
+                learning_players=learning_players,
+                make_milestone_evaluation=make_milestone_evaluation,
+            )
+    except _Refused as refusal:
+        print(refusal, file=sys.stderr)
+        return 1
+    return 0
+
+
+class _Refused(Exception):
+    """A command that refuses to do what it was asked, with the reason: `pong`
+    prints it and exits with 1, having changed nothing."""
+
+
+def _add_device_option(command: argparse.ArgumentParser) -> None:
+    """The option of where `command`, a command that trains, trains."""
+    command.add_argument(
         "--device",
         choices=["cuda", "cpu"],
         default="cuda",
         help="where to train: the graphics card, the default, or the CPU",
     )
-    args = parser.parse_args(argv)
-
-    if args.command == "play":
-        # Only the window needs pygame, so only the window's commands import it.
-        from pong_ai_bot.window import play_against_the_opponent
-
-        play_against_the_opponent(seed=secrets.randbits(32))
-    elif args.command == "measure-env":
-        return _measure_env()
-    elif args.command == "evaluate":
-        return _evaluate(args)
-    elif args.command == "choose-width":
-        return _choose_width()
-    elif args.command == "train":
-        return _train(args)
-    elif args.command == "resume":
-        return _resume(args)
-    return 0
 
 
 def _measure_env() -> int:
@@ -191,18 +247,28 @@ def _measure_env() -> int:
     return 1
 
 
-def _evaluate(args: argparse.Namespace) -> int:
+def _evaluate(
+    args: argparse.Namespace,
+    *,
+    learning_players: Mapping[str, LearningPlayer],
+    pong: PongMaker,
+) -> int:
     """`pong evaluate`: the Evaluation, on the regular set, of a Scripted player,
     or of a Milestone after its Run, at the Milestone's Step."""
+    if args.output is not None and RunDirectory.is_results_file(args.output):
+        raise _Refused(
+            f"{args.output} is a Run's file of results, and only the Run itself "
+            "adds to it, so that an Evaluation after it never changes the Milestone "
+            "it chooses. Give --output another file."
+        )
     if args.scripted is not None:
-        evaluation, step = evaluate_scripted_player(args.scripted), None
+        evaluation, step = evaluate_scripted_player(args.scripted, pong=pong), None
     else:
-        found = _milestone_to_evaluate(args.milestone, output=args.output)
-        if isinstance(found, str):
-            print(found, file=sys.stderr)
-            return 1
-        run, milestone = found
-        evaluation, step = evaluate_milestone(run, milestone), milestone.step
+        run, milestone = _milestone_to_evaluate(
+            args.milestone, learning_players=learning_players
+        )
+        evaluation = evaluate_milestone(run, milestone, players=learning_players)
+        step = milestone.step
     print(evaluation.summary_line(seed_set=SeedSet.REGULAR, step=step))
     if args.output is not None:
         line = evaluation.json_line(seed_set=SeedSet.REGULAR, step=step)
@@ -212,42 +278,31 @@ def _evaluate(args: argparse.Namespace) -> int:
 
 
 def _milestone_to_evaluate(
-    path: Path, *, output: Path | None
-) -> tuple[RunDirectory, SavedFile] | str:
-    """The Milestone at `path` and its Run, for `pong evaluate` to evaluate, adding
-    its line to `output` if given; or the reason it can't."""
-    not_a_milestone = (
+    path: Path, *, learning_players: Mapping[str, LearningPlayer]
+) -> tuple[RunDirectory, SavedFile]:
+    """The Milestone at `path` and its Run, for `pong evaluate` to evaluate, its
+    player one of `learning_players`. If it can't, it is _Refused."""
+    not_a_milestone = _Refused(
         f"{path} is not a Milestone of a Run: a Run's directory keeps its "
         "Milestones, named by their Steps, such as milestone_000500000.pt."
     )
-    if not (path.parent / SETTINGS_FILE).is_file():
-        return not_a_milestone
+    if not RunDirectory.holds_a_run(path.parent):
+        raise not_a_milestone
     run = _open_run(path.parent)
-    milestone = next(
-        (saved for saved in run.milestones() if saved.path.name == path.name), None
-    )
+    milestone = run.milestone_file(path)
     if milestone is None:
-        return not_a_milestone
-    if not LEARNING_PLAYERS[run.player].evaluated:
-        return (
+        raise not_a_milestone
+    if not learning_players[run.player].evaluated:
+        raise _Refused(
             f"The Run's player, {run.player}, has no Evaluation: a test "
             "environment's Games have no score to count them by."
-        )
-    if (
-        output is not None
-        and output.resolve() == (run.path / EVALUATIONS_FILE).resolve()
-    ):
-        return (
-            f"Only the Run itself adds to its {EVALUATIONS_FILE}, so that an "
-            "Evaluation after it never changes the Milestone it chooses. Give "
-            "--output another file."
         )
     return run, milestone
 
 
-def _choose_width() -> int:
+def _choose_width(*, pong: PongMaker) -> int:
     def evaluate_at(name: str, width: float) -> Evaluation:
-        evaluation = evaluate_scripted_player(name, width=width)
+        evaluation = evaluate_scripted_player(name, width=width, pong=pong)
         # Each Evaluation as it ends, since all of them take minutes.
         summary = evaluation.summary_line(seed_set=SeedSet.REGULAR)
         print(f"{name} at {width:.0%}: {summary}", flush=True)
@@ -278,13 +333,7 @@ def _add_run_settings(command: argparse.ArgumentParser) -> None:
                 help=f"default {'on' if default else 'off'}",
             )
             continue
-        # A setting that may be None, such as no clipping, is given as its other
-        # type.
-        [kind] = [
-            kind
-            for kind in get_args(field.type) or [field.type]
-            if kind is not type(None)
-        ]
+        kind = field.type
         assert isinstance(kind, type)
         if issubclass(kind, Enum):
             choices, metavar = list(kind), None
@@ -302,8 +351,6 @@ def _add_run_settings(command: argparse.ArgumentParser) -> None:
 
 def _shown(default: object) -> str:
     """A setting's default, as `pong train --help` shows it."""
-    if default is None:
-        return "none"
     if isinstance(default, int):
         return f"{default:_}"
     return str(default)
@@ -314,20 +361,18 @@ _STOPPED_BY_CTRL_C = 130
 stopped by Ctrl+C: 128 and SIGINT's number, 2."""
 
 
-def _training_device(name: str) -> torch.device | None:
+def _training_device(name: str) -> torch.device:
     """The device `pong train` or `pong resume` trains on, by its `--device`
-    `name`, printed; or None, with the reason printed, if it refuses the CPU
-    because PyTorch sees no graphics card (issue #11)."""
+    `name`, printed. It refuses the CPU when PyTorch sees no graphics card,
+    unless `name` asks for it (issue #11)."""
     import torch
 
     if name == "cuda" and not torch.cuda.is_available():
-        print(
+        raise _Refused(
             "PyTorch sees no graphics card, and on the CPU a Run trains about 20 "
             "times slower. Check that PyTorch is the cu126 build (README), or pass "
-            "--device cpu to train on the CPU on purpose.",
-            file=sys.stderr,
+            "--device cpu to train on the CPU on purpose."
         )
-        return None
     device = torch.device(name)
     if device.type == "cuda":
         print(f"Device: cuda ({torch.cuda.get_device_name(device)})")
@@ -336,11 +381,13 @@ def _training_device(name: str) -> torch.device | None:
     return device
 
 
-def _train(args: argparse.Namespace) -> int:
+def _train(
+    args: argparse.Namespace,
+    *,
+    learning_players: Mapping[str, LearningPlayer],
+    make_milestone_evaluation: MilestoneEvaluationMaker,
+) -> int:
     device = _training_device(args.device)
-    if device is None:
-        return 1
-
     settings = RunSettings(
         **{
             field.name: getattr(args, field.name)
@@ -348,67 +395,83 @@ def _train(args: argparse.Namespace) -> int:
             if hasattr(args, field.name)
         }
     )
-    run = RunDirectory.create(
-        player=args.player, name=args.name, seed=args.seed, settings=settings
-    )
+    try:
+        run = RunDirectory.create(
+            player=args.player, name=args.name, seed=args.seed, settings=settings
+        )
+    except InvalidRunError as error:
+        raise _Refused(str(error)) from None
     print(f"The Run's directory: {run.path}", flush=True)
-    return _train_or_resume(run, device, resumed=False)
+    return _train_or_resume(
+        run,
+        device,
+        resumed=False,
+        player=learning_players[run.player],
+        make_milestone_evaluation=make_milestone_evaluation,
+    )
 
 
-def _resume(args: argparse.Namespace) -> int:
+def _resume(
+    args: argparse.Namespace,
+    *,
+    learning_players: Mapping[str, LearningPlayer],
+    make_milestone_evaluation: MilestoneEvaluationMaker,
+) -> int:
     device = _training_device(args.device)
-    if device is None:
-        return 1
     run = _open_run(args.run)
-    # So that the Confirmation's set never becomes a set to choose by (issues #13,
-    # #14).
-    confirmation = run.confirmation()
-    if confirmation is not None:
-        print(
-            "The Run had its Confirmation, of the Milestone at Step "
-            f"{confirmation.step:,}: a Run never goes on after it.",
-            file=sys.stderr,
-        )
-        return 1
-    budget = run.settings.budget
-    # The Run's end saves a Milestone at its Budget, which may come after its
-    # latest checkpoint. A Run with Evaluations then evaluates it, and confirms
-    # its best Milestone: until it has its Confirmation, its resume gives it.
-    evaluated = LEARNING_PLAYERS[run.player].evaluated
-    if not evaluated and any(saved.step == budget for saved in run.milestones()):
-        print(
-            f"The Run reached its Budget, {budget:,} Steps, already: there is "
-            "nothing to resume."
-        )
+    player = learning_players[run.player]
+    try:
+        check_not_over(run, evaluated=player.evaluated)
+    except ConfirmedRunError as error:
+        raise _Refused(str(error)) from None
+    except RunOverError as error:
+        # Over as it should be: nothing went wrong.
+        print(error)
         return 0
     if not run.checkpoints():
-        print(
+        raise _Refused(
             "The Run has no full checkpoint to resume from: it saves its first at "
             f"Step {run.settings.checkpoint_every:,}, or when Ctrl+C stops it. "
-            "Start a new Run instead.",
-            file=sys.stderr,
+            "Start a new Run instead."
         )
-        return 1
-    return _train_or_resume(run, device, resumed=True)
+    return _train_or_resume(
+        run,
+        device,
+        resumed=True,
+        player=player,
+        make_milestone_evaluation=make_milestone_evaluation,
+    )
 
 
 def _open_run(path: Path) -> RunDirectory:
     """The Run whose directory is `path`, with each warning of opening it, such as
-    that the code is at another commit than the Run was created at, printed."""
+    that the code is at another commit than the Run was created at, printed. If
+    `path` holds no Run, it is _Refused."""
     # Shown as a line of their own rather than as Python shows a warning, with the
     # line of code that gave it.
     with warnings.catch_warnings(record=True) as warned:
         warnings.simplefilter("always")
-        run = RunDirectory.open(path)
+        try:
+            run = RunDirectory.open(path)
+        except NotARunError as error:
+            raise _Refused(str(error)) from None
     for warning in warned:
         print(f"Warning: {warning.message}", file=sys.stderr)
     return run
 
 
-def _train_or_resume(run: RunDirectory, device: torch.device, *, resumed: bool) -> int:
+def _train_or_resume(
+    run: RunDirectory,
+    device: torch.device,
+    *,
+    resumed: bool,
+    player: LearningPlayer,
+    make_milestone_evaluation: MilestoneEvaluationMaker,
+) -> int:
     """Train the Run `run` on `device`, a new one or, if `resumed`, one resumed
-    from its latest full checkpoint, with a new learner of its player, and say how
-    it stopped."""
+    from its latest full checkpoint, with a new learner of its player, `player`,
+    evaluated by the Evaluation `make_milestone_evaluation` makes if it has
+    Evaluations, and say how it stopped."""
     # Only here: PyTorch takes seconds to import, and the other commands don't
     # need it.
     import torch
@@ -416,11 +479,8 @@ def _train_or_resume(run: RunDirectory, device: torch.device, *, resumed: bool) 
 
     from pong_ai_bot.keep_awake import keep_windows_awake
     from pong_ai_bot.learner import Learner, LearnerSettings
-    from pong_ai_bot.learning_players import milestone_evaluation
-    from pong_ai_bot.training import resume_run, train_run
 
     settings = run.settings
-    player = LEARNING_PLAYERS[run.player]
     # The network's first weights come from the Run's seed too. A resumed Run's
     # learner takes on its checkpoint's instead.
     torch.manual_seed(run.seed)
@@ -436,18 +496,14 @@ def _train_or_resume(run: RunDirectory, device: torch.device, *, resumed: bool) 
     # leaves PyTorch's random generator as it was. The training is stopped while
     # it plays, its 100 Games together on the graphics card (#13).
     evaluation = (
-        milestone_evaluation(copy.deepcopy(network), player.make_env)
+        make_milestone_evaluation(copy.deepcopy(network), player.make_env)
         if player.evaluated
         else None
     )
     purge_step = None
     if resumed:
         step = run.checkpoints()[-1].step
-        print(
-            f"Resuming the Run at Step {step:,}, from its latest full checkpoint, "
-            f"with a new Game. A new replay buffer fills for {settings.fill_steps:,} "
-            "Steps before the learning goes on."
-        )
+        print(f"Resuming the Run at Step {step:,}, from its latest full checkpoint.")
         # TensorBoard hides every point from this Step on that was written before:
         # those written after the checkpoint, which the resumed Run writes again.
         purge_step = step + 1

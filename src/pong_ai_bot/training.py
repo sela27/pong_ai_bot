@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, BinaryIO, NamedTuple, Protocol
+from typing import TYPE_CHECKING, Any, BinaryIO, Protocol
 
 import gymnasium as gym
 import numpy as np
@@ -26,6 +26,7 @@ from pong_ai_bot.ctrl_c import CtrlC, catch_ctrl_c
 from pong_ai_bot.evaluation import Evaluation, EvaluationStopped, SeedSet
 from pong_ai_bot.graphs import ScalarWriter, TrainingGraphs
 from pong_ai_bot.run_settings import RunSettings
+from pong_ai_bot.transition import Transition
 
 if TYPE_CHECKING:
     from pong_ai_bot.run_directory import RunDirectory, SavedFile
@@ -61,21 +62,6 @@ class EpsilonSchedule:
         """ε at the Run's Step `step`, counting from 0."""
         done = min(step / self.decay_steps, 1.0)
         return self.start + (self.end - self.start) * done
-
-
-class Transition(NamedTuple):
-    """One Step, as the learner learns from it."""
-
-    observation: Any
-    """What the learner chose its Action from."""
-    action: int
-    reward: float
-    next_observation: Any
-    """What the environment gave after the Step, even if the Game ended in it."""
-    terminated: bool
-    """Whether the Game ended in the Step, so that it has no future."""
-    truncated: bool
-    """Whether the Game was cut off in the Step, though it had a future."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -225,12 +211,15 @@ def train_run(
     through `writer`.
 
     The Run saves a Milestone at Step 0, a full checkpoint every so many Steps and
-    a Milestone every so many, as its settings say, and a Milestone at its end. A
-    full checkpoint holds the learner's whole state (its two networks, Adam's
-    state and its random generator's), the Run's Step count, and how many times
-    the Run was resumed, none in a new Run. A Milestone holds the network's
-    weights alone. The learner fills its replay buffer before it learns, and the
-    filling's Steps count toward the Budget like any other.
+    a Milestone every so many, as its settings say, and a Milestone at its end. At
+    every Milestone but Step 0's, it saves a full checkpoint first, if one of every
+    so many doesn't fall there, so that a resume, from its latest, never plays
+    again the Steps up to a Milestone it saved (#17). A full checkpoint holds the
+    learner's whole state (its two networks, Adam's state and its random
+    generator's), the Run's Step count, and how many times the Run was resumed,
+    none in a new Run. A Milestone holds the network's weights alone. The learner
+    fills its replay buffer before it learns, and the filling's Steps count toward
+    the Budget like any other.
 
     Before Step 0, the Run saves the fixed inputs of its Q graph, from a Game of
     random Actions against `env`.
@@ -277,9 +266,36 @@ def train_run(
         )
 
 
-class ConfirmedRunError(RuntimeError):
+class RunOverError(RuntimeError):
+    """A Run that is over resumed: it has nothing left to play."""
+
+
+class ConfirmedRunError(RunOverError):
     """A Run that had its Confirmation resumed: it never goes on, so that the
     Confirmation's set never becomes a set to choose by (issues #13, #14)."""
+
+
+def check_not_over(run: RunDirectory, *, evaluated: bool) -> None:
+    """Fail if the Run `run`, of Evaluations if `evaluated`, is over, so that
+    resuming it would play nothing: with a ConfirmedRunError once it had its
+    Confirmation, and with a RunOverError once it has none and reached its Budget.
+
+    A Run with Evaluations isn't over before its Confirmation, even once its
+    training is: resuming it gives it.
+    """
+    confirmation = run.confirmation()
+    if confirmation is not None:
+        raise ConfirmedRunError(
+            "The Run had its Confirmation, of the Milestone at Step "
+            f"{confirmation.step:,}: a Run never goes on after it."
+        )
+    # The Run's end saves its last file, the Milestone of its Budget.
+    budget = run.settings.budget
+    if not evaluated and run.milestone(budget) is not None:
+        raise RunOverError(
+            f"The Run reached its Budget, {budget:,} Steps, already: there is "
+            "nothing to resume."
+        )
 
 
 def resume_run(
@@ -305,23 +321,19 @@ def resume_run(
     graph's inputs are the ones the Run saved.
 
     It saves and evaluates its Milestones, stops as `train_run` does, and holds
-    the request `stay_awake` makes, and says where it stopped. A Run stopped after
+    the request `stay_awake` makes, and says where it stopped. If it has Steps
+    to play, it prints that a new replay buffer fills before the learning goes on. A Run stopped after
     its training was over, and before its Confirmation, such as by Ctrl+C in it,
     plays no Step more: it only has its Confirmation.
 
-    A Run that had its Confirmation never goes on: it fails with a
-    ConfirmedRunError, with nothing played.
+    A Run that is over fails as `check_not_over` says, with nothing played: a
+    Run that had its Confirmation never goes on.
     """
     # Only here: PyTorch takes seconds to import, and the ε schedule doesn't need
     # it.
     import torch
 
-    confirmation = run.confirmation()
-    if confirmation is not None:
-        raise ConfirmedRunError(
-            "The Run had its Confirmation, of the Milestone at Step "
-            f"{confirmation.step:,}: a Run never goes on after it."
-        )
+    check_not_over(run, evaluated=evaluation is not None)
     with stay_awake(), catch_ctrl_c() as ctrl_c:
         checkpoint = torch.load(run.checkpoints()[-1].path)
         learner.load_state_dict(checkpoint["learner"])
@@ -440,7 +452,8 @@ def _play_run(
         measured = run.evaluations()
         # max keeps the first of a tie.
         best = max(sorted(measured), key=lambda step: measured[step].summary.mean)
-        [milestone] = [saved for saved in run.milestones() if saved.step == best]
+        milestone = run.milestone(best)
+        assert milestone is not None
         try:
             result = evaluation(
                 milestone, seed_set=SeedSet.CONFIRMATION, stop=lambda: ctrl_c.pressed
@@ -472,15 +485,18 @@ def _play_run(
         return step % settings.milestone_every == 0 or step == settings.budget
 
     def after_step(step: int) -> None:
-        if step % settings.checkpoint_every == 0:
+        # The checkpoint first: a stop between the two leaves its Milestone to
+        # the resume, which saves it from the checkpoint's network.
+        milestone = has_a_milestone(step)
+        if milestone or step % settings.checkpoint_every == 0:
             save_checkpoint(step)
-        if has_a_milestone(step):
+        if milestone:
             save_milestone(step)
 
     # The Milestone of Step 0, and on a resume the one of the checkpoint's Step,
     # if a stop between the two files left it unsaved: the learner's network is
     # the checkpoint's, as it was at the Step.
-    if has_a_milestone(start) and start not in {m.step for m in run.milestones()}:
+    if has_a_milestone(start) and run.milestone(start) is None:
         run.save_milestone(start, _saving(learner.network_state_dict()))
     # A Milestone saved and not measured, as when Ctrl+C abandoned its Evaluation,
     # is measured before the Run goes on (#17).
@@ -488,11 +504,19 @@ def _play_run(
     for milestone in run.milestones():
         if milestone.step not in measured:
             measure(milestone)
-    # A Milestone at the Budget is saved only at the Run's end, so with one the
-    # Run trains no more, as when a crash stopped it before its Confirmation, its
-    # latest checkpoint before its end. The same goes once its training stopped at
-    # a Milestone of at least stop_mean.
-    trained = settings.budget in {saved.step for saved in run.milestones()}
+
+    # A resume from a full checkpoint at the Budget plays no Step, as when a crash
+    # stopped the Run before its Confirmation. The same goes once its training
+    # stopped at a Milestone of at least stop_mean: its checkpoint is there.
+    def stop() -> bool:
+        return ctrl_c.pressed or stop_at is not None
+
+    if resumes and start < settings.budget and not stop():
+        print(
+            "The Run goes on with a new Game, and a new replay buffer, which "
+            f"fills for {settings.fill_steps:,} Steps before the learning goes on.",
+            flush=True,
+        )
     graphs.begin(start, resumes=resumes)
     stopped_at = train(
         env,
@@ -502,7 +526,7 @@ def _play_run(
         seed=seed,
         start=start,
         after_step=after_step,
-        stop=lambda: ctrl_c.pressed or trained or stop_at is not None,
+        stop=stop,
         graphs=graphs,
     )
     # Over at its first Milestone of at least stop_mean, or at its Budget with
@@ -511,7 +535,7 @@ def _play_run(
     # included, and it resumes from a full checkpoint at the Step, unless it has
     # one there already, as one of every so many.
     over = stop_at is not None or (
-        (trained or stopped_at == settings.budget)
+        stopped_at == settings.budget
         and (evaluation is None or settings.budget in run.evaluations())
     )
     if over and evaluation is not None:

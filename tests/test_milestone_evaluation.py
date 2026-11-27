@@ -15,6 +15,7 @@ import numpy.typing as npt
 import pytest
 import torch
 from gymnasium import spaces
+from helpers import A_COMMIT
 from torch import nn
 
 from pong_ai_bot.environment import Action
@@ -25,11 +26,7 @@ from pong_ai_bot.learning_players import (
     milestone_evaluation,
     milestone_player,
 )
-from pong_ai_bot.run_directory import Commit, RunDirectory, SavedFile
-
-A_COMMIT = Commit(
-    sha="0123456789abcdef0123456789abcdef01234567", uncommitted_changes=False
-)
+from pong_ai_bot.run_directory import RunDirectory, SavedFile
 
 
 class OneStepGames(gym.Env[npt.NDArray[np.float32], np.int64]):
@@ -56,8 +53,7 @@ class OneStepGames(gym.Env[npt.NDArray[np.float32], np.int64]):
 
 
 @pytest.fixture
-def run(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> RunDirectory:
-    monkeypatch.setenv("PONG_AI_BOT_RUNS_DIR", str(tmp_path / "runs"))
+def run() -> RunDirectory:
     return RunDirectory.create(
         player="agent",
         name="baseline",
@@ -94,12 +90,11 @@ def test_a_milestone_is_played_greedily_by_its_weights_on_the_regular_set(
     )
 
 
-def test_a_milestone_loads_into_a_greedy_player_with_the_saved_network_s_q_values(
-    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_a_milestone_loads_into_a_greedy_player_with_the_saved_network_s_q_values() -> (
+    None
+):
     # A Position learner's Run, its player as its settings file records it, and a
     # Milestone of a network of its kind.
-    monkeypatch.setenv("PONG_AI_BOT_RUNS_DIR", str(tmp_path / "runs"))
     created = RunDirectory.create(
         player="position-learner", name="baseline", seed=1, commit=A_COMMIT
     )

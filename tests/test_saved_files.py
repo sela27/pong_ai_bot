@@ -5,16 +5,15 @@ Milestones' Evaluations and of its Confirmation."""
 import json
 from collections.abc import Callable
 from datetime import datetime
-from pathlib import Path
 from typing import BinaryIO
 
 import numpy as np
 import numpy.typing as npt
 import pytest
+from helpers import A_COMMIT
 
 from pong_ai_bot.evaluation import Evaluation, GameResult, SeedSet
 from pong_ai_bot.run_directory import (
-    Commit,
     Confirmation,
     Kind,
     RunDirectory,
@@ -24,16 +23,13 @@ from pong_ai_bot.run_directory import (
 
 
 @pytest.fixture
-def run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> RunDirectory:
-    """A new Run, with the default settings, in a temporary Runs' directory."""
-    monkeypatch.setenv("PONG_AI_BOT_RUNS_DIR", str(tmp_path / "runs"))
+def run() -> RunDirectory:
+    """A new Run, with the default settings, in the test's Runs' directory."""
     return RunDirectory.create(
         player="agent",
         name="baseline",
         seed=1,
-        commit=Commit(
-            sha="0123456789abcdef0123456789abcdef01234567", uncommitted_changes=False
-        ),
+        commit=A_COMMIT,
         now=datetime(2026, 11, 27, 14, 30),
     )
 

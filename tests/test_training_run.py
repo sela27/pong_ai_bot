@@ -4,7 +4,8 @@ the fixed inputs of its Q graph, its stop at the Budget, at its first Milestone 
 awake (issues #10, #13, #14).
 
 The learner is a fake, with no network and no optimizer: creating the real one's
-optimizer takes seconds, too long for a fast test. So are the request to Windows,
+optimizer takes seconds, too long for a fast test. Where a test needs the real
+learner, its optimizer is a fake instead. So are the request to Windows,
 and TensorBoard's writer, which takes seconds to import: the graphs are checked by
 eye in TensorBoard, on a test environment's Run (#17). So is the Evaluation, which
 plays no Game: no test ever plays the Confirmation's set (issue #16). The
@@ -30,31 +31,23 @@ import numpy.typing as npt
 import pytest
 import torch
 from gymnasium import spaces
+from helpers import A_COMMIT, press_ctrl_c
+from torch import nn
 
 from pong_ai_bot.evaluation import Evaluation, EvaluationStopped, GameResult, SeedSet
-from pong_ai_bot.run_directory import Commit, RunDirectory, SavedFile
+from pong_ai_bot.learner import Learner, LearnerSettings
+from pong_ai_bot.learning_players import LEARNING_PLAYERS
+from pong_ai_bot.run_directory import RunDirectory, SavedFile
 from pong_ai_bot.run_settings import RunSettings
 from pong_ai_bot.test_environments import ConstantRewardEnv, TwoStepEnv
 from pong_ai_bot.training import (
     ConfirmedRunError,
+    RunOverError,
     RunStop,
-    Transition,
     resume_run,
     train_run,
 )
-
-A_COMMIT = Commit(
-    sha="0123456789abcdef0123456789abcdef01234567", uncommitted_changes=False
-)
-"""The commit the tests' Runs are created at, rather than asking git for it."""
-
-
-@pytest.fixture(autouse=True)
-def runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """The Runs' directory for one test, a temporary one."""
-    root = tmp_path / "runs"
-    monkeypatch.setenv("PONG_AI_BOT_RUNS_DIR", str(root))
-    return root
+from pong_ai_bot.transition import Transition
 
 
 def new_run(settings: RunSettings) -> RunDirectory:
@@ -117,13 +110,6 @@ class CountingLearner:
 
     def network_state_dict(self) -> dict[str, Any]:
         return {"weights after": self.given}
-
-
-def press_ctrl_c() -> None:
-    """Press Ctrl+C, as Python sees it: it calls the handler of SIGINT."""
-    handler = signal.getsignal(signal.SIGINT)
-    assert callable(handler)
-    handler(signal.SIGINT, None)
 
 
 class CtrlCLearner(CountingLearner):
@@ -227,7 +213,7 @@ def test_a_run_evaluates_each_milestone_once_as_it_is_saved() -> None:
     assert means == {0: -20.0, 10: -10.0, 20: 0.0, 23: 3.0}
     # The Run learns from its own 23 Steps alone, with its files at their Steps.
     assert learner.given == 23
-    assert [saved.step for saved in run.checkpoints()] == [5, 10, 15, 20]
+    assert [saved.step for saved in run.checkpoints()] == [5, 10, 15, 20, 23]
     assert [saved.step for saved in run.milestones()] == [0, 10, 20, 23]
 
 
@@ -346,10 +332,11 @@ def test_each_evaluation_graphs_its_mean_min_and_cut_off_at_its_milestone_s_step
 @pytest.mark.parametrize(
     ("at", "checkpoints", "milestones"),
     [
-        # At the Run's start, its end, and in between.
+        # At the Run's start, its end, and in between. Each Milestone but Step
+        # 0's has a checkpoint at its Step anyway.
         (0, [0], [0]),
         (10, [4, 8, 10], [0, 10]),
-        (13, [4, 8, 12, 13], [0, 10, 13]),
+        (13, [4, 8, 10, 12, 13], [0, 10, 13]),
     ],
 )
 def test_ctrl_c_in_an_evaluation_abandons_it_and_stops_the_run_with_a_checkpoint(
@@ -637,7 +624,7 @@ def test_ctrl_c_in_the_confirmation_abandons_it_and_stops_the_run_with_a_checkpo
 
 def test_a_run_saves_its_files_at_step_0_every_so_many_steps_and_its_budget() -> None:
     # Checkpoints at every multiple of 5 up to 23, and Milestones at 0, at every
-    # multiple of 10, and at the Run's end, 23.
+    # multiple of 10, and at the Run's end, 23, with a checkpoint there too.
     run = new_run(
         RunSettings(
             budget=23, checkpoint_every=5, checkpoints_kept=10, milestone_every=10
@@ -647,14 +634,18 @@ def test_a_run_saves_its_files_at_step_0_every_so_many_steps_and_its_budget() ->
 
     train_run(run, ConstantRewardEnv(), learner, stay_awake=Awake(), writer=NoGraphs())
 
-    assert [saved.step for saved in run.checkpoints()] == [5, 10, 15, 20]
+    assert [saved.step for saved in run.checkpoints()] == [5, 10, 15, 20, 23]
     assert [saved.step for saved in run.milestones()] == [0, 10, 20, 23]
     # The Run stops at its Budget: 23 Steps, each learned from.
     assert learner.given == 23
 
 
 def test_a_checkpoint_holds_the_learner_s_state_its_step_and_no_resumes() -> None:
-    run = new_run(RunSettings(budget=12, checkpoint_every=5, milestone_every=10))
+    run = new_run(
+        RunSettings(
+            budget=12, checkpoint_every=5, checkpoints_kept=10, milestone_every=10
+        )
+    )
 
     train_run(
         run,
@@ -664,13 +655,12 @@ def test_a_checkpoint_holds_the_learner_s_state_its_step_and_no_resumes() -> Non
         writer=NoGraphs(),
     )
 
-    first, second = run.checkpoints()
-    assert torch.load(first.path) == {"learner": {"given": 5}, "step": 5, "resumes": 0}
-    assert torch.load(second.path) == {
-        "learner": {"given": 10},
-        "step": 10,
-        "resumes": 0,
-    }
+    # Every 5 Steps, and at the Budget.
+    assert [torch.load(saved.path) for saved in run.checkpoints()] == [
+        {"learner": {"given": 5}, "step": 5, "resumes": 0},
+        {"learner": {"given": 10}, "step": 10, "resumes": 0},
+        {"learner": {"given": 12}, "step": 12, "resumes": 0},
+    ]
 
 
 def test_a_milestone_holds_the_network_s_weights_after_its_step() -> None:
@@ -900,10 +890,107 @@ def test_a_resumed_run_plays_on_from_its_latest_checkpoint_to_its_budget() -> No
     # The learner takes on its state of Step 7, and learns from Steps 8 to 12.
     assert stopped == RunStop(step=12, by_ctrl_c=False)
     assert learner.given == 12
-    # The Step count goes on from 7: a checkpoint at Step 10, and Milestones at 10
-    # and at the Budget.
-    assert [saved.step for saved in run.checkpoints()] == [7, 10]
+    # The Step count goes on from 7: a checkpoint at Step 10 and at the Budget,
+    # the latest two kept, and Milestones at 10 and at the Budget.
+    assert [saved.step for saved in run.checkpoints()] == [10, 12]
     assert [saved.step for saved in run.milestones()] == [0, 10, 12]
+
+
+def test_a_resume_with_steps_left_says_a_new_buffer_fills_before_learning_on(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run = stopped_by_ctrl_c(
+        RunSettings(budget=12, checkpoint_every=5, milestone_every=10, fill_steps=3),
+        at=7,
+    )
+    capsys.readouterr()
+
+    resume_run(
+        run,
+        ConstantRewardEnv(),
+        CountingLearner(),
+        stay_awake=Awake(),
+        writer=NoGraphs(),
+    )
+
+    assert capsys.readouterr().out.splitlines()[0] == (
+        "The Run goes on with a new Game, and a new replay buffer, which fills for "
+        "3 Steps before the learning goes on."
+    )
+
+
+class NoOptimizer:
+    """A fake of the learner's optimizer, Adam, which leaves the network's
+    weights as they are: creating the real one takes seconds."""
+
+    def __init__(self, network: nn.Module, settings: LearnerSettings) -> None:
+        pass
+
+    def zero_grad(self) -> None:
+        pass
+
+    def step(self) -> None:
+        pass
+
+    def state_dict(self) -> dict[str, Any]:
+        return {}
+
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        pass
+
+
+class UpdateRecordingLearner(Learner):
+    """The real learner of test environment 1's player, with a fake of its
+    optimizer, which records, for each Step it learns from, whether it updated
+    the network, and presses Ctrl+C while it learns from its Step `ctrl_c_at`, if
+    given."""
+
+    def __init__(self, settings: RunSettings, *, ctrl_c_at: int | None = None) -> None:
+        player = LEARNING_PLAYERS["test-env-1"]
+        super().__init__(
+            player.make_network(),
+            actions=player.actions,
+            stack_length=player.stack_length,
+            settings=LearnerSettings.of_run(settings),
+            seed=1,
+            optimizer=NoOptimizer,
+        )
+        self._ctrl_c_at = ctrl_c_at
+        self.updated: list[bool] = []
+
+    def learn(self, transition: Transition) -> float | None:
+        loss = super().learn(transition)
+        self.updated.append(loss is not None)
+        if len(self.updated) == self._ctrl_c_at:
+            press_ctrl_c()
+        return loss
+
+
+def test_a_resumed_run_s_learner_fills_a_new_buffer_before_it_updates_again() -> None:
+    # An update every Step, once the buffer holds 3 transitions.
+    settings = RunSettings(
+        budget=12,
+        checkpoint_every=5,
+        milestone_every=10,
+        replay_buffer_size=100,
+        fill_steps=3,
+        batch_size=2,
+        update_every=1,
+    )
+    run = new_run(settings)
+    make_env = LEARNING_PLAYERS["test-env-1"].make_env
+    stopped = UpdateRecordingLearner(settings, ctrl_c_at=7)
+    train_run(run, make_env(), stopped, stay_awake=Awake(), writer=NoGraphs())
+    run = RunDirectory.open(run.path, current_commit=A_COMMIT)
+    resumed = UpdateRecordingLearner(settings)
+
+    resume_run(run, make_env(), resumed, stay_awake=Awake(), writer=NoGraphs())
+
+    # Up to the stop at Step 7, the network is updated from Step 3 on. The resume
+    # learns from Steps 8 to 12: the first two fill a new buffer, with no update,
+    # and from Step 10 on, with 3 transitions in it, each updates.
+    assert stopped.updated == [False, False, True, True, True, True, True]
+    assert resumed.updated == [False, False, True, True, True]
 
 
 def test_each_resume_counts_one_more_in_the_run_s_checkpoints() -> None:
@@ -933,8 +1020,8 @@ def test_each_resume_counts_one_more_in_the_run_s_checkpoints() -> None:
     )
 
     assert torch.load(run.checkpoints()[-1].path) == {
-        "learner": {"given": 10},
-        "step": 10,
+        "learner": {"given": 12},
+        "step": 12,
         "resumes": 2,
     }
 
@@ -1091,11 +1178,15 @@ def test_a_resume_measures_first_the_milestone_whose_evaluation_was_abandoned(
     ids=["ctrl_c-stopped-at-19", "crash-stopped-at-19", "crash-at-the-budget"],
 )
 def test_a_run_stopped_before_its_confirmation_has_it_on_resume_and_no_step(
-    means: dict[int, float], end: int, interruption: str
+    means: dict[int, float],
+    end: int,
+    interruption: str,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # Checkpoints every 4 Steps, and Milestones every 10, and at the Budget, 23. A
-    # crash leaves the latest checkpoint before the Run's end, and Ctrl+C one at
-    # it. Either way, the Milestone of Step 10 is the best.
+    # Checkpoints every 4 Steps, and Milestones every 10, and at the Budget, 23,
+    # each with a checkpoint at its Step. A crash, or Ctrl+C, in the Confirmation
+    # leaves the latest checkpoint at the Run's end. Either way, the Milestone of
+    # Step 10 is the best.
     run = new_run(
         RunSettings(
             budget=23, checkpoint_every=4, checkpoints_kept=10, milestone_every=10
@@ -1116,6 +1207,7 @@ def test_a_run_stopped_before_its_confirmation_has_it_on_resume_and_no_step(
     milestones = run.milestones()
     learner = EpsilonRecordingLearner()
     evaluation = FixedMeans(means, confirmation=18.5)
+    capsys.readouterr()
 
     stopped = resume_run(
         run,
@@ -1127,9 +1219,11 @@ def test_a_run_stopped_before_its_confirmation_has_it_on_resume_and_no_step(
     )
 
     assert stopped == RunStop(step=end, by_ctrl_c=False)
-    # The Confirmation alone: no Step, no Milestone, and no Evaluation again.
+    # The Confirmation alone: no Step, no Milestone, and no Evaluation again,
+    # and so no replay buffer to fill.
     assert evaluation.asked == [(10, CONFIRMATION)]
     assert learner.epsilons == []
+    assert "replay buffer" not in capsys.readouterr().out
     assert run.milestones() == milestones
     confirmation = run.confirmation()
     assert confirmation is not None
@@ -1169,6 +1263,32 @@ def test_a_run_that_had_its_confirmation_refuses_to_resume() -> None:
 
     # Nothing is played, and nothing written.
     assert evaluation.asked == []
+    assert awake.requests == 0
+    assert sorted(run.path.iterdir()) == files
+
+
+def test_a_run_of_no_evaluations_that_reached_its_budget_refuses_to_resume() -> None:
+    run = new_run(RunSettings(budget=12, checkpoint_every=5, milestone_every=10))
+    train_run(
+        run,
+        ConstantRewardEnv(),
+        CountingLearner(),
+        stay_awake=Awake(),
+        writer=NoGraphs(),
+    )
+    files = sorted(run.path.iterdir())
+    awake = Awake()
+
+    with pytest.raises(RunOverError, match="its Budget, 12 Steps, already"):
+        resume_run(
+            run,
+            ConstantRewardEnv(),
+            CountingLearner(),
+            stay_awake=awake,
+            writer=NoGraphs(),
+        )
+
+    # Nothing is played, and nothing written.
     assert awake.requests == 0
     assert sorted(run.path.iterdir()) == files
 
@@ -1222,3 +1342,53 @@ def test_a_resume_saves_and_measures_first_a_milestone_a_crash_left_unsaved() ->
     assert evaluation.evaluated == [10, 12]
     assert evaluation.given_then == [10, 12]
     assert list(run.evaluations()) == [0, 10, 12]
+
+
+@pytest.mark.parametrize("budget", [70, 90], ids=["budget-off-checkpoints", "on"])
+def test_a_crash_after_a_milestone_off_the_checkpoints_leaves_a_run_that_resumes(
+    budget: int,
+) -> None:
+    # Checkpoints every 30 Steps and Milestones every 50: the Milestone of Step
+    # 50 falls on no checkpoint of every 30. A second Ctrl+C in Step 56 stops the
+    # Run at once, as a crash would. No Milestone's mean, its Step minus 20, stops
+    # the Run before its Budget.
+    run = new_run(
+        RunSettings(
+            budget=budget, checkpoint_every=30, milestone_every=50, stop_mean=1_000
+        )
+    )
+    with pytest.raises(KeyboardInterrupt):
+        train_run(
+            run,
+            ConstantRewardEnv(),
+            CtrlCLearner(at=56, presses=2),
+            stay_awake=Awake(),
+            writer=NoGraphs(),
+            evaluation=FakeEvaluation(),
+        )
+    # The Run resumes from a full checkpoint at the Milestone, never before it:
+    # it never plays again the Steps up to a Milestone saved, and of the graphs'
+    # points, its resume drops only those after the checkpoint, none of them a
+    # Milestone's Evaluation.
+    assert run.checkpoints()[-1].step == 50
+    run = RunDirectory.open(run.path, current_commit=A_COMMIT)
+    learner = CountingLearner()
+    evaluation = FakeEvaluation()
+
+    stopped = resume_run(
+        run,
+        ConstantRewardEnv(),
+        learner,
+        stay_awake=Awake(),
+        writer=NoGraphs(),
+        evaluation=evaluation,
+    )
+
+    assert stopped == RunStop(step=budget, by_ctrl_c=False)
+    assert learner.given == budget
+    assert evaluation.evaluated == [budget]
+    assert [saved.step for saved in run.milestones()] == [0, 50, budget]
+    assert list(run.evaluations()) == [0, 50, budget]
+    # And a full checkpoint at the Budget, the Run's last Step, whether one of
+    # every 30 falls on it or not.
+    assert run.checkpoints()[-1].step == budget

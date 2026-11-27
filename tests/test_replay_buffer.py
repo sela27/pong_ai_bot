@@ -19,7 +19,7 @@ from pong_ai_bot.environment import Action, PongEnv
 from pong_ai_bot.game import Ball, PhysicsState, Score
 from pong_ai_bot.replay_buffer import ReplayBuffer
 from pong_ai_bot.stack import ObservationStack
-from pong_ai_bot.training import Transition
+from pong_ai_bot.transition import Transition
 
 
 class FakeGames(gym.Env[npt.NDArray[np.int64], int]):

@@ -3,10 +3,11 @@ wrapped as it sees it, and its network (#17), and the Evaluation of a learning
 player's Milestones.
 
 They are the Position learner, and the test environments' tiny players, with which
-an agent can run tiny Runs in a temporary directory. The Agent comes later.
+Claude, or another coding assistant, can run tiny Runs in a temporary directory. The
+Agent comes later.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -50,17 +51,23 @@ class LearningPlayer:
 
 
 def _test_environment_player(
-    make_env: Callable[[], gym.Env[Any, Any]], *, actions: int
+    make_test_env: Callable[[], gym.Env[Any, Any]], *, actions: int
 ) -> LearningPlayer:
-    """The player of a test environment: its input is one number, a stack of one
-    Observation, and its network is tiny."""
+    """The player of a test environment: its input is a stack of one Observation,
+    one number, by the same wrapper as the Position learner's stack of four, and
+    its network is tiny."""
+
+    def make_env() -> gym.Env[Any, Any]:
+        return ObservationStack(make_test_env(), length=1)
 
     def make_network() -> nn.Module:
         # Only here: PyTorch takes seconds to import, and `pong`'s other commands
         # don't need it.
         from torch import nn
 
-        return nn.Sequential(nn.Linear(1, 16), nn.ReLU(), nn.Linear(16, actions))
+        return nn.Sequential(
+            nn.Flatten(), nn.Linear(1, 16), nn.ReLU(), nn.Linear(16, actions)
+        )
 
     return LearningPlayer(
         make_env=make_env,
@@ -138,24 +145,36 @@ def milestone_evaluation(network: nn.Module, make_env: EnvMaker) -> MilestoneEva
     return evaluate_in_the_run
 
 
-def evaluate_milestone(run: RunDirectory, milestone: SavedFile) -> Evaluation:
+def evaluate_milestone(
+    run: RunDirectory,
+    milestone: SavedFile,
+    *,
+    players: Mapping[str, LearningPlayer] = LEARNING_PLAYERS,
+) -> Evaluation:
     """The Evaluation of `milestone`, one of the Run `run`'s Milestones, after the
     Run, as `pong evaluate` plays it: its greedy player, on the CPU, in the
-    environment of the Run's player, on the regular set.
+    environment of the Run's player, on the regular set. The Run's player is the
+    one of `players` its settings file names.
 
     Never on the Confirmation's set, which only the end of a Run plays, once. It
     records nothing in the Run either, so it never changes the Milestone the Run
     chooses (issue #16).
     """
-    make_env = LEARNING_PLAYERS[run.player].make_env
-    return evaluate(milestone_player(run, milestone), make_env, SeedSet.REGULAR.seeds)
+    make_env = players[run.player].make_env
+    player = milestone_player(run, milestone, players=players)
+    return evaluate(player, make_env, SeedSet.REGULAR.seeds)
 
 
-def milestone_player(run: RunDirectory, milestone: SavedFile) -> GreedyPlayer:
+def milestone_player(
+    run: RunDirectory,
+    milestone: SavedFile,
+    *,
+    players: Mapping[str, LearningPlayer] = LEARNING_PLAYERS,
+) -> GreedyPlayer:
     """The greedy player of `milestone`, one of the Run `run`'s Milestones: a new
-    network of the kind of the Run's player, as its settings file records it, on
-    the CPU, with the weights the Milestone holds."""
-    network = LEARNING_PLAYERS[run.player].make_network()
+    network of the kind of the Run's player, the one of `players` its settings
+    file names, on the CPU, with the weights the Milestone holds."""
+    network = players[run.player].make_network()
     return _greedy_player(network, milestone)
 
 
@@ -166,8 +185,8 @@ def _greedy_player(network: nn.Module, milestone: SavedFile) -> GreedyPlayer:
     # don't need it.
     import torch
 
-    from pong_ai_bot.learner import GreedyPlayer
+    from pong_ai_bot.learner import GreedyPlayer, device_of
 
-    device = next(network.parameters()).device
-    network.load_state_dict(torch.load(milestone.path, map_location=device))
+    map_location = device_of(network)
+    network.load_state_dict(torch.load(milestone.path, map_location=map_location))
     return GreedyPlayer(network)
