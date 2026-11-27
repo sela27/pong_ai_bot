@@ -3,8 +3,8 @@
 Each Step, the learner chooses an Action, with ε by the Step counter alone, and
 learns from the Step's transition. The loop never reads the `info`. It knows
 nothing of Pong, and of files only through the Run directory: a Run's loop saves
-its full checkpoints and its Milestones there, and stops at its Budget. It writes
-the Run's graphs too, through the writer it is given.
+its full checkpoints and its Milestones there, and stops at its Budget, or when
+Ctrl+C is pressed. It writes the Run's graphs too, through the writer it is given.
 """
 
 from collections.abc import Callable
@@ -17,6 +17,7 @@ import numpy as np
 import numpy.typing as npt
 from gymnasium import spaces
 
+from pong_ai_bot.ctrl_c import catch_ctrl_c
 from pong_ai_bot.graphs import ScalarWriter, TrainingGraphs
 from pong_ai_bot.run_settings import RunSettings
 
@@ -104,16 +105,21 @@ def train(
     epsilon: EpsilonSchedule,
     seed: int,
     after_step: Callable[[int], None] | None = None,
+    stop: Callable[[], bool] | None = None,
     graphs: TrainingGraphs | None = None,
-) -> None:
+) -> int:
     """Play `steps` Steps against `env`, a Game after another, the first reset with
     `seed`, with `learner` choosing each Action and learning from each Step.
 
     After each Step, `graphs`, if given, are told of it, and then `after_step`, if
-    given, gets how many Steps have been played.
+    given, gets how many Steps have been played. Before each Step, `stop`, if
+    given, says whether to stop there instead. It returns how many Steps were
+    played.
     """
     observation, _ = env.reset(seed=seed)
     for step in range(steps):
+        if stop is not None and stop():
+            return step
         action = learner.choose_action(observation, epsilon.at(step))
         next_observation, reward, terminated, truncated, _ = env.step(action)
         loss = learner.learn(
@@ -139,6 +145,7 @@ def train(
             observation = next_observation
         if after_step is not None:
             after_step(step + 1)
+    return steps
 
 
 def _q_graph_inputs(env: gym.Env[Any, Any], *, seed: int) -> npt.NDArray[Any]:
@@ -170,7 +177,7 @@ def train_run(
     *,
     stay_awake: Callable[[], AbstractContextManager[object]],
     writer: ScalarWriter,
-) -> None:
+) -> int:
     """Play the new Run `run` against `env`, from Step 0 to its Budget, with
     `learner`, by the Run's settings and from its seed, and write its graphs
     through `writer`.
@@ -186,6 +193,11 @@ def train_run(
     Before Step 0, the Run saves the fixed inputs of its Q graph, from a Game of
     random Actions against `env`.
 
+    One Ctrl+C stops the Run once its Step is over, with a full checkpoint at that
+    Step, unless it has one there already, and no Milestone: the Run isn't over. A
+    second Ctrl+C stops it at once, with a KeyboardInterrupt. It returns the Step
+    the Run stopped at: its Budget, or the Step Ctrl+C was pressed in.
+
     All along, it holds the request `stay_awake` makes, that Windows doesn't sleep,
     and releases it however the Run ends.
     """
@@ -199,14 +211,17 @@ def train_run(
     def saving(state: dict[str, Any]) -> Callable[[BinaryIO], None]:
         return lambda file: torch.save(state, file)
 
+    def save_checkpoint(step: int) -> None:
+        checkpoint = {"learner": learner.state_dict(), "step": step, "resumes": 0}
+        run.save_checkpoint(step, saving(checkpoint))
+
     def after_step(step: int) -> None:
         if step % settings.checkpoint_every == 0:
-            checkpoint = {"learner": learner.state_dict(), "step": step, "resumes": 0}
-            run.save_checkpoint(step, saving(checkpoint))
+            save_checkpoint(step)
         if step % settings.milestone_every == 0 or step == settings.budget:
             run.save_milestone(step, saving(learner.network_state_dict()))
 
-    with stay_awake():
+    with stay_awake(), catch_ctrl_c() as ctrl_c:
         q_graph_inputs = _q_graph_inputs(env, seed=run.seed)
         run.save_q_graph_inputs(q_graph_inputs)
         graphs = TrainingGraphs(
@@ -216,12 +231,18 @@ def train_run(
         )
         run.save_milestone(0, saving(learner.network_state_dict()))
         graphs.begin(0, resumes=0)
-        train(
+        stopped_at = train(
             env,
             learner,
             steps=settings.budget,
             epsilon=epsilon,
             seed=run.seed,
             after_step=after_step,
+            stop=lambda: ctrl_c.pressed,
             graphs=graphs,
         )
+        # Unless the Step has its checkpoint already, as one of every so many.
+        checkpointed = {saved.step for saved in run.checkpoints()}
+        if stopped_at < settings.budget and stopped_at not in checkpointed:
+            save_checkpoint(stopped_at)
+    return stopped_at

@@ -63,6 +63,8 @@ uv run pong train --player test-env-1 --name tiny --seed 1 --device cpu --budget
 
 בהתחלה הפקודה מדפיסה על איזה מכשיר היא רצה, ומסרבת לרוץ על ה-CPU בלי `--device cpu` ([#11](https://github.com/sela27/pong_ai_bot/issues/11)). ה-buffer מתמלא לפני הלמידה, וה-Step-ים של המילוי נספרים ב-Budget ([#14](https://github.com/sela27/pong_ai_bot/issues/14)). ‏checkpoint מלא נכתב כל 50,000 Step-ים, ו-Milestone ב-Step 0, כל 500,000 Step-ים ובסוף ה-Run, שנעצר ב-Budget. בזמן שה-Run רץ, Windows לא נרדם ([#10](https://github.com/sela27/pong_ai_bot/issues/10)).
 
+‏`Ctrl+C` אחד מסיים את ה-Step הנוכחי, כותב checkpoint מלא באותו Step ויוצא, בלי Milestone, כי ה-Run לא נגמר. ‏`Ctrl+C` שני יוצא מיד, בלי checkpoint של ה-Step, ואז ה-checkpoint האחרון הוא זה שנכתב לפניו ([#10](https://github.com/sela27/pong_ai_bot/issues/10)). בשני המקרים קוד היציאה הוא 130, כמו של תוכנית שנעצרה ב-`Ctrl+C`.
+
 בינתיים השחקנים היחידים הם של ארבע סביבות הבדיקה, `test-env-1` עד `test-env-4`, כדי שסוכן יוכל להריץ Run-ים זעירים בתיקייה זמנית ([#9](https://github.com/sela27/pong_ai_bot/issues/9)).
 
 ### לראות את הגרפים

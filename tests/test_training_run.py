@@ -1,14 +1,18 @@
 """A Run's training loop, in a temporary directory: the files it saves at its Steps,
-the fixed inputs of its Q graph, its stop at the Budget, and its request that
-Windows stays awake (issue #10).
+the fixed inputs of its Q graph, its stop at the Budget or by Ctrl+C, and its
+request that Windows stays awake (issue #10).
 
 The learner is a fake, with no network and no optimizer: creating the real one's
 optimizer takes seconds, too long for a fast test. So are the request to Windows,
 and TensorBoard's writer, which takes seconds to import: the graphs are checked by
 eye in TensorBoard, on a test environment's Run (#17). The environment is test
 environment 1, whose every Game is one Step long, unless a test says otherwise.
+Ctrl+C is pressed without a real signal: Python calls the handler of SIGINT when
+Ctrl+C is pressed, and the tests call it themselves, while the Run plays a chosen
+Step.
 """
 
+import signal
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
@@ -100,6 +104,30 @@ class CountingLearner:
         return {"weights after": self.given}
 
 
+def press_ctrl_c() -> None:
+    """Press Ctrl+C, as Python sees it: it calls the handler of SIGINT."""
+    handler = signal.getsignal(signal.SIGINT)
+    assert callable(handler)
+    handler(signal.SIGINT, None)
+
+
+class CtrlCLearner(CountingLearner):
+    """A fake learner that presses Ctrl+C, `presses` times, while it learns from
+    its Step `at`, if given: as the developer would, while the Run plays that
+    Step."""
+
+    def __init__(self, *, at: int | None, presses: int = 1) -> None:
+        super().__init__()
+        self._at = at
+        self._presses = presses
+
+    def learn(self, transition: Transition) -> None:
+        super().learn(transition)
+        if self.given == self._at:
+            for _ in range(self._presses):
+                press_ctrl_c()
+
+
 def test_a_run_saves_its_files_at_step_0_every_so_many_steps_and_its_budget() -> None:
     # Checkpoints at every multiple of 5 up to 23, and Milestones at 0, at every
     # multiple of 10, and at the Run's end, 23.
@@ -173,22 +201,20 @@ def test_a_budget_on_a_milestone_s_step_saves_that_milestone_once() -> None:
     assert torch.load(run.milestones()[-1].path) == {"weights after": 20}
 
 
-class AwakeCheckingLearner(CountingLearner):
+class AwakeCheckingLearner(CtrlCLearner):
     """A fake learner that records, at each Step, whether Windows is asked to stay
-    awake, and stops the Run as Ctrl+C would at its Step `interrupted_at`, if
-    given."""
+    awake, and presses Ctrl+C as CtrlCLearner does, if `at` is given."""
 
-    def __init__(self, awake: Awake, *, interrupted_at: int | None = None) -> None:
-        super().__init__()
+    def __init__(
+        self, awake: Awake, *, at: int | None = None, presses: int = 1
+    ) -> None:
+        super().__init__(at=at, presses=presses)
         self._awake = awake
-        self._interrupted_at = interrupted_at
         self.held_at_each_step: list[bool] = []
 
     def learn(self, transition: Transition) -> None:
-        super().learn(transition)
         self.held_at_each_step.append(self._awake.held)
-        if self.given == self._interrupted_at:
-            raise KeyboardInterrupt
+        super().learn(transition)
 
 
 def test_windows_is_asked_to_stay_awake_through_the_run_and_released_at_its_end() -> (
@@ -205,18 +231,88 @@ def test_windows_is_asked_to_stay_awake_through_the_run_and_released_at_its_end(
     assert not awake.held
 
 
-def test_the_request_to_stay_awake_is_released_when_the_run_is_stopped() -> None:
+@pytest.mark.parametrize("presses", [1, 2])
+def test_the_request_to_stay_awake_is_released_when_ctrl_c_stops_the_run(
+    presses: int,
+) -> None:
+    # Once the Run's Step is over, or at once.
     run = new_run(RunSettings(budget=12, checkpoint_every=5, milestone_every=10))
     awake = Awake()
-    learner = AwakeCheckingLearner(awake, interrupted_at=7)
+    learner = AwakeCheckingLearner(awake, at=7, presses=presses)
 
-    with pytest.raises(KeyboardInterrupt):
+    try:
         train_run(
             run, ConstantRewardEnv(), learner, stay_awake=awake, writer=NoGraphs()
         )
+    except KeyboardInterrupt:
+        pass
 
     assert learner.held_at_each_step == [True] * 7
     assert not awake.held
+
+
+def test_ctrl_c_stops_the_run_after_its_step_with_a_full_checkpoint_there() -> None:
+    run = new_run(RunSettings(budget=12, checkpoint_every=5, milestone_every=10))
+    learner = CtrlCLearner(at=7)
+    handler_before = signal.getsignal(signal.SIGINT)
+
+    stopped_at = train_run(
+        run, ConstantRewardEnv(), learner, stay_awake=Awake(), writer=NoGraphs()
+    )
+
+    # Step 7 is played to its end and learned from, and the Run stops there.
+    assert stopped_at == 7
+    assert learner.given == 7
+    assert [saved.step for saved in run.checkpoints()] == [5, 7]
+    assert torch.load(run.checkpoints()[-1].path) == {
+        "learner": {"given": 7},
+        "step": 7,
+        "resumes": 0,
+    }
+    # A stop is not the Run's end, so it saves no Milestone.
+    assert [saved.step for saved in run.milestones()] == [0]
+    # Ctrl+C is Python's again once the Run is over.
+    assert signal.getsignal(signal.SIGINT) is handler_before
+
+
+def test_ctrl_c_in_a_step_with_its_checkpoint_saved_already_saves_it_once() -> None:
+    # Step 10 has a checkpoint every 5 Steps, and a Milestone every 10.
+    run = new_run(RunSettings(budget=12, checkpoint_every=5, milestone_every=10))
+
+    stopped_at = train_run(
+        run,
+        ConstantRewardEnv(),
+        CtrlCLearner(at=10),
+        stay_awake=Awake(),
+        writer=NoGraphs(),
+    )
+
+    assert stopped_at == 10
+    assert [saved.step for saved in run.checkpoints()] == [5, 10]
+    assert torch.load(run.checkpoints()[-1].path) == {
+        "learner": {"given": 10},
+        "step": 10,
+        "resumes": 0,
+    }
+    assert [saved.step for saved in run.milestones()] == [0, 10]
+
+
+def test_a_second_ctrl_c_stops_the_run_at_once_with_no_checkpoint() -> None:
+    run = new_run(RunSettings(budget=12, checkpoint_every=5, milestone_every=10))
+    handler_before = signal.getsignal(signal.SIGINT)
+
+    # Both in Step 7, before its end.
+    with pytest.raises(KeyboardInterrupt):
+        train_run(
+            run,
+            ConstantRewardEnv(),
+            CtrlCLearner(at=7, presses=2),
+            stay_awake=Awake(),
+            writer=NoGraphs(),
+        )
+
+    assert [saved.step for saved in run.checkpoints()] == [5]
+    assert signal.getsignal(signal.SIGINT) is handler_before
 
 
 def test_a_new_run_saves_1000_inputs_for_its_q_graph_as_its_games_give_them() -> None:
