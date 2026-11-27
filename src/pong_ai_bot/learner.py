@@ -2,10 +2,11 @@
 (issue #3).
 
 The network comes from outside: from a batch of inputs, it gives each input's Q of
-each Action. The learner chooses Actions by ε, keeps the latest transitions, and
-updates the network from random batches of them, with Adam and the MSE loss. It
-knows nothing of Pong, of files or of TensorBoard. In an Evaluation and in
-watching, the network plays as the greedy player instead, with no randomness.
+each Action. The learner chooses Actions by ε, keeps the latest transitions in its
+replay buffer, and updates the network from random batches of them, with Adam and
+the MSE loss. It knows nothing of Pong, of files or of TensorBoard. In an
+Evaluation and in watching, the network plays as the greedy player instead, with
+no randomness.
 
 Each update moves the Q of a transition's Action toward its target: its Reward, and
 the discounted value of the Observation after it, unless the Game ended in it. That
@@ -16,7 +17,6 @@ value.
 """
 
 import copy
-from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -26,6 +26,7 @@ import numpy.typing as npt
 import torch
 from torch import nn
 
+from pong_ai_bot.replay_buffer import ReplayBuffer
 from pong_ai_bot.training import Transition
 
 
@@ -42,7 +43,7 @@ class LearnerSettings:
     update_every: int
     """How many Steps from one update of the network to the next."""
     replay_buffer_size: int
-    """How many of the latest transitions the learner keeps."""
+    """How many of the latest transitions the replay buffer keeps."""
     fill_steps: int
     """How many transitions the learner keeps before its first update."""
     target_copy_every: int
@@ -64,12 +65,14 @@ class Learner:
         network: nn.Module,
         *,
         actions: int,
+        stack_length: int,
         settings: LearnerSettings,
         seed: int,
     ) -> None:
-        """A learner for `network`, whose every input has `actions` Actions. It
-        draws its random choices from `seed`. Its target network starts as a copy
-        of `network`."""
+        """A learner for `network`, whose every input has `actions` Actions, and is
+        a stack of `stack_length` Observations, as the stack's wrapper gives them.
+        It draws its random choices from `seed`. Its target network starts as a
+        copy of `network`."""
         self._network = network
         self._target_network = copy.deepcopy(network)
         self._actions = actions
@@ -79,7 +82,9 @@ class Learner:
             network.parameters(), lr=settings.learning_rate
         )
         self._rng = np.random.default_rng(seed)
-        self._replay: deque[Transition] = deque(maxlen=settings.replay_buffer_size)
+        self._replay = ReplayBuffer(
+            size=settings.replay_buffer_size, stack_length=stack_length
+        )
         self._steps_given = 0
 
     def choose_action(self, observation: Any, epsilon: float) -> int:
@@ -92,7 +97,7 @@ class Learner:
     def learn(self, transition: Transition) -> None:
         """Keep `transition`, update the network if its settings say so, and then
         copy it to the target network if they say so."""
-        self._replay.append(transition)
+        self._replay.add(transition)
         self._steps_given += 1
         settings = self._settings
         if (
@@ -106,8 +111,7 @@ class Learner:
     def state_dict(self) -> dict[str, Any]:
         """The learner's state now: the network's weights, the target network's,
         Adam's state, the random generator's, and how many Steps it was given, by
-        which it updates and copies. Not the transitions it keeps: they are never
-        saved.
+        which it updates and copies. Not its replay buffer: it is never saved.
 
         It is a copy, which the learner's learning on never changes. PyTorch's own
         state dicts hold the learner's own tensors, and another learner given them
@@ -132,8 +136,7 @@ class Learner:
         self._steps_given = state["steps_given"]
 
     def _update(self) -> None:
-        picks = self._rng.integers(len(self._replay), size=self._settings.batch_size)
-        batch = [self._replay[pick] for pick in picks]
+        batch = self._replay.sample(self._settings.batch_size, self._rng)
         batch_targets = targets(
             batch,
             self._network,
