@@ -69,7 +69,7 @@ uv run pong train --player test-env-1 --name tiny --seed 1 --device cpu --budget
 
 ‏`Ctrl+C` אחד מסיים את ה-Step הנוכחי, כותב checkpoint מלא באותו Step ויוצא, בלי Milestone, כי ה-Run לא נגמר. באמצע Evaluation הוא זונח אותו, והוא לא נרשם: ה-Run נעצר עם checkpoint מלא ב-Step של ה-Milestone, גם ב-Budget, וההמשך מודד אותה קודם. באמצע ה-Confirmation הוא זונח אותו באותה צורה, וההמשך נותן אותו. ‏`Ctrl+C` שני יוצא מיד, בלי checkpoint של ה-Step, ואז ה-checkpoint האחרון הוא זה שנכתב לפניו ([#10](https://github.com/sela27/pong_ai_bot/issues/10)). בשני המקרים קוד היציאה הוא 130, כמו של תוכנית שנעצרה ב-`Ctrl+C`.
 
-בינתיים השחקנים היחידים הם של ארבע סביבות הבדיקה, `test-env-1` עד `test-env-4`, כדי שסוכן יוכל להריץ Run-ים זעירים בתיקייה זמנית ([#9](https://github.com/sela27/pong_ai_bot/issues/9)).
+השחקנים הם ה-Position learner, ‏`position-learner`, ושל ארבע סביבות הבדיקה, `test-env-1` עד `test-env-4`, כדי שסוכן יוכל להריץ Run-ים זעירים בתיקייה זמנית ([#9](https://github.com/sela27/pong_ai_bot/issues/9)). ה-Position learner משחק Pong במקום ה-Agent, עם אותן הגדרות, אבל לומד מהמיקומים של הכדור ושני ה-Paddle-ים בארבעת ה-Step-ים האחרונים, 16 מספרים, ברשת קטנה. יש לו Evaluation, ולסביבות הבדיקה אין. ה-Agent יגיע בשלב 3.
 
 ### להמשיך
 

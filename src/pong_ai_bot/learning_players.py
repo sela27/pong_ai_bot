@@ -2,8 +2,8 @@
 wrapped as it sees it, and its network (#17), and the Evaluation of a learning
 player's Milestones.
 
-So far they are the test environments' tiny players, so that an agent can run tiny
-Runs in a temporary directory. The Position learner and the Agent come later.
+They are the Position learner, and the test environments' tiny players, with which
+an agent can run tiny Runs in a temporary directory. The Agent comes later.
 """
 
 from collections.abc import Callable
@@ -12,7 +12,10 @@ from typing import TYPE_CHECKING, Any
 
 import gymnasium as gym
 
+from pong_ai_bot.environment import PongEnv
 from pong_ai_bot.evaluation import EnvMaker, Evaluation, SeedSet, evaluate
+from pong_ai_bot.positions import Positions
+from pong_ai_bot.stack import STACK_LENGTH, ObservationStack
 from pong_ai_bot.test_environments import (
     ConstantRewardEnv,
     RewardByActionEnv,
@@ -67,7 +70,45 @@ def _test_environment_player(
     )
 
 
+def _position_learner() -> LearningPlayer:
+    """The Position learner: it plays Pong in the Agent's place, with the Agent's
+    Actions, Steps and stack of four, but decides from the positions of the ball
+    and the Paddles instead of from the Observation (issue #9).
+
+    Its network is small (#17): the stack's 16 numbers, in a row, two hidden layers
+    of 256 with ReLU, and a linear output of a Q for each Action. The positions are
+    in Court units already, so they go in as they are.
+    """
+
+    def make_env() -> gym.Env[Any, Any]:
+        return ObservationStack(Positions(PongEnv()), STACK_LENGTH)
+
+    def make_network() -> nn.Module:
+        # Only here: PyTorch takes seconds to import, and `pong`'s other commands
+        # don't need it.
+        from torch import nn
+
+        # Each stack of four Steps' positions, four numbers each, in a row of 16.
+        return nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(16, 256),
+            nn.ReLU(),
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.Linear(256, 3),
+        )
+
+    return LearningPlayer(
+        make_env=make_env,
+        make_network=make_network,
+        actions=3,
+        stack_length=STACK_LENGTH,
+        evaluated=True,
+    )
+
+
 LEARNING_PLAYERS: dict[str, LearningPlayer] = {
+    "position-learner": _position_learner(),
     "test-env-1": _test_environment_player(ConstantRewardEnv, actions=1),
     "test-env-2": _test_environment_player(RewardIsInputEnv, actions=1),
     "test-env-3": _test_environment_player(TwoStepEnv, actions=1),
