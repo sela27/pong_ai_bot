@@ -35,13 +35,8 @@ from pong_ai_bot.evaluation import Evaluation, EvaluationStopped, GameResult, Se
 from pong_ai_bot.run_directory import Commit, RunDirectory, SavedFile
 from pong_ai_bot.run_settings import RunSettings
 from pong_ai_bot.test_environments import ConstantRewardEnv, TwoStepEnv
-from pong_ai_bot.training import (
-    ConfirmedRunError,
-    RunStop,
-    Transition,
-    resume_run,
-    train_run,
-)
+from pong_ai_bot.training import ConfirmedRunError, RunStop, resume_run, train_run
+from pong_ai_bot.transition import Transition
 
 A_COMMIT = Commit(
     sha="0123456789abcdef0123456789abcdef01234567", uncommitted_changes=False

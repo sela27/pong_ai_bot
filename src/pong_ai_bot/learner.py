@@ -29,7 +29,7 @@ from torch import nn
 
 from pong_ai_bot.replay_buffer import ReplayBuffer
 from pong_ai_bot.run_settings import Loss, RunSettings
-from pong_ai_bot.training import Transition
+from pong_ai_bot.transition import Transition
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

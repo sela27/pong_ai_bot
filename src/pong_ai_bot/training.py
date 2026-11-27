@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, BinaryIO, NamedTuple, Protocol
+from typing import TYPE_CHECKING, Any, BinaryIO, Protocol
 
 import gymnasium as gym
 import numpy as np
@@ -26,6 +26,7 @@ from pong_ai_bot.ctrl_c import CtrlC, catch_ctrl_c
 from pong_ai_bot.evaluation import Evaluation, EvaluationStopped, SeedSet
 from pong_ai_bot.graphs import ScalarWriter, TrainingGraphs
 from pong_ai_bot.run_settings import RunSettings
+from pong_ai_bot.transition import Transition
 
 if TYPE_CHECKING:
     from pong_ai_bot.run_directory import RunDirectory, SavedFile
@@ -61,21 +62,6 @@ class EpsilonSchedule:
         """ε at the Run's Step `step`, counting from 0."""
         done = min(step / self.decay_steps, 1.0)
         return self.start + (self.end - self.start) * done
-
-
-class Transition(NamedTuple):
-    """One Step, as the learner learns from it."""
-
-    observation: Any
-    """What the learner chose its Action from."""
-    action: int
-    reward: float
-    next_observation: Any
-    """What the environment gave after the Step, even if the Game ended in it."""
-    terminated: bool
-    """Whether the Game ended in the Step, so that it has no future."""
-    truncated: bool
-    """Whether the Game was cut off in the Step, though it had a future."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

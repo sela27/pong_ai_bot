@@ -17,7 +17,7 @@ from pong_ai_bot.game import Score
 from pong_ai_bot.learning_players import LEARNING_PLAYERS
 from pong_ai_bot.replay_buffer import ReplayBuffer
 from pong_ai_bot.run_directory import RunDirectory
-from pong_ai_bot.training import Transition
+from pong_ai_bot.transition import Transition
 
 
 def test_it_plays_pong_from_the_stack_of_the_last_four_steps_positions() -> None:

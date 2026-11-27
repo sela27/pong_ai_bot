@@ -13,7 +13,7 @@ import numpy as np
 import numpy.typing as npt
 
 from pong_ai_bot.stack import stack_indices
-from pong_ai_bot.training import Transition
+from pong_ai_bot.transition import Transition
 
 
 class ReplayBuffer:

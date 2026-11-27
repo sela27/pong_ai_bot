@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from pong_ai_bot.run_settings import Loss, RunSettings
-from pong_ai_bot.training import Transition
+from pong_ai_bot.transition import Transition
 
 if TYPE_CHECKING:
     from pong_ai_bot.learner import Learner
