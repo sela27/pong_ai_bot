@@ -6,7 +6,7 @@ import shutil
 import signal
 import subprocess
 import sysconfig
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from dataclasses import fields, replace
 from pathlib import Path
 from typing import Any, SupportsFloat
@@ -342,9 +342,13 @@ def test_ctrl_c_stops_pong_train_after_its_step_with_a_full_checkpoint(
 
     # As a program stopped by Ctrl+C: 128 and SIGINT's number, 2.
     assert exit_code == 130
-    assert capsys.readouterr().out.splitlines()[-1] == (
+    out, err = capsys.readouterr()
+    assert out.splitlines()[-1] == (
         "Ctrl+C stopped the Run at Step 12, with a full checkpoint there."
     )
+    assert err == ""
+    # A second press, as `pong` ends, changes nothing: it is ignored.
+    assert signal.getsignal(signal.SIGINT) == signal.SIG_IGN
     [path] = runs.iterdir()
     run = RunDirectory.open(path)
     # The latest two checkpoints are kept, the one of Step 5 deleted.
@@ -490,23 +494,20 @@ def pressing_ctrl_c_in_step(at: int, *, presses: int) -> dict[str, LearningPlaye
 
 
 @pytest.fixture
-def pressing_ctrl_c_in_the_setup() -> Iterator[dict[str, LearningPlayer]]:
+def pressing_ctrl_c_in_the_setup() -> dict[str, LearningPlayer]:
     """The learning players, with test environment 1's pressing Ctrl+C as its
     network is made, in the setup before its Run's first Step, as the developer
-    would right after starting it: before its learner, and Adam with it, is made.
-
-    After the test, Ctrl+C is as it was before it: `pong`, stopped there, leaves
-    it ignored, to its process's end.
-    """
+    would right after starting it: before its learner, and Adam with it, is made."""
     player = LEARNING_PLAYERS["test-env-1"]
 
     def make_network() -> Any:
         press_ctrl_c()
         return player.make_network()
 
-    handler_before = signal.getsignal(signal.SIGINT)
-    yield {**LEARNING_PLAYERS, "test-env-1": replace(player, make_network=make_network)}
-    signal.signal(signal.SIGINT, handler_before)
+    return {
+        **LEARNING_PLAYERS,
+        "test-env-1": replace(player, make_network=make_network),
+    }
 
 
 def test_ctrl_c_in_pong_train_s_setup_stops_it_with_one_line_and_no_run_directory(
@@ -549,7 +550,7 @@ def test_a_second_ctrl_c_after_pong_train_s_setup_stopped_is_ignored(
     assert signal.getsignal(signal.SIGINT) == signal.SIG_IGN
 
 
-def test_ctrl_c_is_as_it_was_after_pong_train_ends_without_it() -> None:
+def test_ctrl_c_is_as_it_was_after_pong_train_refuses_a_run() -> None:
     handler_before = signal.getsignal(signal.SIGINT)
     run = ["--player", "test-env-1", "--name", "a/b", "--seed", "1"]
 
