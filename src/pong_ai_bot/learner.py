@@ -4,7 +4,8 @@
 The network comes from outside: from a batch of inputs, it gives each input's Q of
 each Action. The learner chooses Actions by ε, keeps the latest transitions, and
 updates the network from random batches of them, with Adam and the MSE loss. It
-knows nothing of Pong, of files or of TensorBoard.
+knows nothing of Pong, of files or of TensorBoard. In an Evaluation and in
+watching, the network plays as the greedy player instead, with no randomness.
 
 For now each transition is valued by its Reward alone, as if every Game ended in
 one Step: the future, through the discount and the target network, comes with test
@@ -13,10 +14,12 @@ environment 3 (#36).
 
 import copy
 from collections import deque
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 import torch
 from torch import nn
 
@@ -57,6 +60,7 @@ class Learner:
         draws its random choices from `seed`."""
         self._network = network
         self._actions = actions
+        self._player = GreedyPlayer(network)
         self._settings = settings
         self._optimizer = torch.optim.Adam(
             network.parameters(), lr=settings.learning_rate
@@ -66,13 +70,11 @@ class Learner:
         self._steps_given = 0
 
     def choose_action(self, observation: Any, epsilon: float) -> int:
-        """A random Action with probability `epsilon`, and otherwise the Action of
-        the highest Q."""
-        if self._rng.random() < epsilon:
-            return int(self._rng.integers(self._actions))
-        with torch.no_grad():
-            q = self._network(_inputs([observation]))
-        return int(q[0].argmax())
+        """The Action for `observation`, by `epsilon`, as `epsilon_greedy_action`
+        chooses it."""
+        return epsilon_greedy_action(
+            self._player, observation, epsilon, actions=self._actions, rng=self._rng
+        )
 
     def learn(self, transition: Transition) -> None:
         """Keep `transition`, and update the network if its settings say so."""
@@ -121,6 +123,46 @@ class Learner:
         self._optimizer.step()
 
 
-def _inputs(observations: list[Any]) -> torch.Tensor:
-    """The network's input from a batch of Observations."""
-    return torch.as_tensor(np.stack(observations), dtype=torch.float32)
+class GreedyPlayer:
+    """A learning player in the Agent's place, as an Evaluation plays it and as
+    watching shows it: every Step, the Action of the highest Q by its network, with
+    no randomness (issue #13)."""
+
+    def __init__(self, network: nn.Module) -> None:
+        self._network = network
+
+    def act(
+        self, observations: npt.NDArray[Any], infos: Sequence[dict[str, Any]]
+    ) -> npt.NDArray[np.int64]:
+        """The Action of the highest Q for each of a batch of Games' Observations.
+        It never reads the `info`s."""
+        return self.q_values(observations).argmax(axis=1)
+
+    def q_values(self, observations: npt.ArrayLike) -> npt.NDArray[np.float32]:
+        """The Q of each Action for each of a batch of Games' Observations, one row
+        for each Game, in the batch's order: what `act` chooses from."""
+        with torch.no_grad():
+            return self._network(_inputs(observations)).numpy()
+
+
+def epsilon_greedy_action(
+    player: GreedyPlayer,
+    observation: Any,
+    epsilon: float,
+    *,
+    actions: int,
+    rng: np.random.Generator,
+) -> int:
+    """The Action for one Observation by ε, as the learner chooses it in training
+    (issue #12): with probability `epsilon`, one of the `actions` Actions at random,
+    each as likely, drawn from `rng`, and otherwise `player`'s, the Action of the
+    highest Q."""
+    if rng.random() < epsilon:
+        return int(rng.integers(actions))
+    return int(player.q_values([observation])[0].argmax())
+
+
+def _inputs(observations: npt.ArrayLike) -> torch.Tensor:
+    """The network's input from a batch of Observations: a list of them, or an
+    array with one along each place of its first axis."""
+    return torch.as_tensor(np.asarray(observations), dtype=torch.float32)
