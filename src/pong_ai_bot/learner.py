@@ -44,10 +44,7 @@ class LearnerSettings:
     adam_eps: float
     """Adam's eps. Adam's other settings are PyTorch's defaults."""
     loss: Loss
-    """The loss the network is fitted with."""
-    max_gradient_norm: float | None
-    """The norm the gradients are clipped to before each update, or None for no
-    clipping."""
+    """The loss the network is fitted with, with no clipping of the gradients."""
     update_every: int
     """How many Steps from one update of the network to the next."""
     replay_buffer_size: int
@@ -71,7 +68,6 @@ class LearnerSettings:
             learning_rate=settings.learning_rate,
             adam_eps=settings.adam_eps,
             loss=settings.loss,
-            max_gradient_norm=settings.max_gradient_norm,
             update_every=settings.update_every,
             replay_buffer_size=settings.replay_buffer_size,
             fill_steps=settings.fill_steps,
@@ -198,10 +194,6 @@ class Learner:
         )
         self._optimizer.zero_grad()
         loss.backward()
-        if self._settings.max_gradient_norm is not None:
-            nn.utils.clip_grad_norm_(
-                self._network.parameters(), self._settings.max_gradient_norm
-            )
         self._optimizer.step()
         return loss.item()
 

@@ -167,7 +167,6 @@ def test_pong_train_has_an_option_for_each_run_setting_with_its_default(
         ("--budget N", "default 10_000_000"),
         ("--learning-rate X", "default 0.0001"),
         ("--loss {mse}", "default mse"),
-        ("--max-gradient-norm X", "default none"),
         ("--double-dqn, --no-double-dqn", "default on"),
     ]:
         assert re.search(rf"{re.escape(option)}\s+{default}", help_text), help_text
@@ -218,8 +217,6 @@ def test_pong_train_runs_a_test_environment_s_tiny_run_to_its_budget(
             "1e-3",
             "--adam-eps",
             "1e-6",
-            "--max-gradient-norm",
-            "10",
             "--loss",
             "mse",
             "--no-double-dqn",
@@ -248,7 +245,6 @@ def test_pong_train_runs_a_test_environment_s_tiny_run_to_its_budget(
         epsilon_decay_steps=10,
         learning_rate=1e-3,
         adam_eps=1e-6,
-        max_gradient_norm=10.0,
         loss=Loss.MSE,
         double_dqn=False,
         checkpoint_every=3,

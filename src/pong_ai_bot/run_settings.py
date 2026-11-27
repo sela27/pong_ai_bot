@@ -49,9 +49,7 @@ class RunSettings:
     target_copy_every: int = 1_000
     """How many Steps between full copies of the network to the target network."""
     loss: Loss = Loss.MSE
-    """The loss the network is fitted with."""
-    max_gradient_norm: float | None = None
-    """The norm the gradients are clipped to, or None for no clipping."""
+    """The loss the network is fitted with, with no clipping of the gradients."""
     discount: float = 0.99
     """How much a Reward one Step later is worth."""
     double_dqn: bool = True

@@ -8,7 +8,7 @@ import warnings
 from dataclasses import fields
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, get_args
+from typing import TYPE_CHECKING
 
 from pong_ai_bot.environment import PongEnv
 from pong_ai_bot.evaluation import Evaluation, SeedSet
@@ -278,13 +278,7 @@ def _add_run_settings(command: argparse.ArgumentParser) -> None:
                 help=f"default {'on' if default else 'off'}",
             )
             continue
-        # A setting that may be None, such as no clipping, is given as its other
-        # type.
-        [kind] = [
-            kind
-            for kind in get_args(field.type) or [field.type]
-            if kind is not type(None)
-        ]
+        kind = field.type
         assert isinstance(kind, type)
         if issubclass(kind, Enum):
             choices, metavar = list(kind), None
@@ -302,8 +296,6 @@ def _add_run_settings(command: argparse.ArgumentParser) -> None:
 
 def _shown(default: object) -> str:
     """A setting's default, as `pong train --help` shows it."""
-    if default is None:
-        return "none"
     if isinstance(default, int):
         return f"{default:_}"
     return str(default)

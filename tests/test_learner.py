@@ -46,7 +46,6 @@ def test_a_learner_given_another_learners_state_learns_on_as_the_other_does() ->
         learning_rate=0.1,
         adam_eps=1e-8,
         loss=Loss.MSE,
-        max_gradient_norm=None,
         update_every=1,
         replay_buffer_size=1,
         fill_steps=1,
@@ -90,7 +89,6 @@ def test_the_network_is_copied_whole_to_the_target_network_every_so_many_steps()
         learning_rate=0.1,
         adam_eps=1e-8,
         loss=Loss.MSE,
-        max_gradient_norm=None,
         update_every=1,
         replay_buffer_size=1,
         fill_steps=1,
@@ -116,20 +114,19 @@ def test_the_network_is_copied_whole_to_the_target_network_every_so_many_steps()
 
 @pytest.mark.slow
 @pytest.mark.parametrize(
-    ("adam_eps", "max_gradient_norm", "weight_after"),
+    ("adam_eps", "weight_after"),
     [
         # Adam's first step is the learning rate times g / (|g| + eps), for the
         # gradient g of the loss. Here g is -2: the MSE loss is (Q - 1)², with Q
         # the weight, 0, times the input, 1.
-        (1e-8, None, 0.1),
-        # 0.1 * 2 / (2 + 2): Adam's eps is the setting's.
-        (2.0, None, 0.05),
-        # The gradient clipped to a norm of 0.5 first: 0.1 * 0.5 / (0.5 + 2).
-        (2.0, 0.5, 0.02),
+        (1e-8, 0.1),
+        # 0.1 * 2 / (2 + 2): Adam's eps is the setting's, and the gradient is
+        # not clipped.
+        (2.0, 0.05),
     ],
 )
-def test_an_update_moves_the_weight_by_the_mse_loss_adam_s_eps_and_the_clipping(
-    adam_eps: float, max_gradient_norm: float | None, weight_after: float
+def test_an_update_moves_the_weight_by_the_mse_loss_and_adam_s_eps(
+    adam_eps: float, weight_after: float
 ) -> None:
     import torch
     from torch import nn
@@ -141,7 +138,6 @@ def test_an_update_moves_the_weight_by_the_mse_loss_adam_s_eps_and_the_clipping(
         learning_rate=0.1,
         adam_eps=adam_eps,
         loss=Loss.MSE,
-        max_gradient_norm=max_gradient_norm,
         update_every=1,
         replay_buffer_size=1,
         fill_steps=1,
@@ -176,7 +172,6 @@ def test_learning_gives_the_loss_of_the_update_made_and_none_before_the_first() 
         learning_rate=0.1,
         adam_eps=1e-8,
         loss=Loss.MSE,
-        max_gradient_norm=None,
         update_every=1,
         replay_buffer_size=2,
         fill_steps=2,

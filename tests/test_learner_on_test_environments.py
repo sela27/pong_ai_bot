@@ -58,7 +58,6 @@ def trained(env: gym.Env[Any, Any], *, actions: int) -> tuple[Learner, nn.Module
         learning_rate=1e-3,
         adam_eps=1e-8,
         loss=Loss.MSE,
-        max_gradient_norm=None,
         update_every=1,
         replay_buffer_size=100,
         fill_steps=8,

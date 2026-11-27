@@ -71,7 +71,7 @@ def test_a_new_run_s_directory_is_named_by_its_date_time_player_name_and_seed(
 def test_reopening_a_run_reads_back_everything_its_settings_file_recorded(
     runs: Path,
 ) -> None:
-    settings = RunSettings(budget=200, fill_steps=10, max_gradient_norm=10.0)
+    settings = RunSettings(budget=200, fill_steps=10, learning_rate=1e-3)
     at_a_changed_commit = Commit(
         sha="fedcba9876543210fedcba9876543210fedcba98", uncommitted_changes=True
     )
