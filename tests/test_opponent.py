@@ -110,6 +110,21 @@ def test_a_ball_that_comes_gets_an_offset_uniform_within_the_width(
 
 
 @pytest.mark.parametrize("side", [Side.LEFT, Side.RIGHT])
+def test_with_no_width_given_the_opponent_plays_at_the_locked_width_of_100_percent(
+    side: Side,
+) -> None:
+    # `pong choose-width` chose 100% of half the Paddle, and it is locked (#31, #62).
+    for seed in range(20):
+        states = [coming_toward(side, 0.5)] * 5
+        by_default = Opponent(np.random.default_rng(seed), side=side)
+        at_100_percent = Opponent(np.random.default_rng(seed), width=1.0, side=side)
+
+        assert paddle_heights(by_default, side, states, paddle=0.5) == (
+            paddle_heights(at_100_percent, side, states, paddle=0.5)
+        ), f"seed {seed}"
+
+
+@pytest.mark.parametrize("side", [Side.LEFT, Side.RIGHT])
 def test_the_offset_is_drawn_once_for_each_ball_that_comes(side: Side) -> None:
     # The ball rises 0.005 a Frame as it comes, and the Paddle catches up with the
     # ball and its offset (at most 0.075) by the 5th Frame. From then on the Paddle

@@ -14,9 +14,9 @@ from pong_ai_bot.game import Game, Side
 from pong_ai_bot.opponent import Opponent
 
 SYMMETRY_WIDTH = 1.0
-"""The offset width on both sides, fixed at 100% rather than the Opponent's locked
-width: at the narrower widths two exact trackers never miss, and every Game is cut
-off at 0:0 (issue #62)."""
+"""The offset width on both sides, fixed at 100% on its own, not taken from the
+Opponent's locked width, though that is 100% too: at the narrower widths two exact
+trackers never miss, and every Game is cut off at 0:0 (issue #62)."""
 
 RIGHT_SIDE_SEED = 1
 """With a Game's seed, the seed of the generator the rule on the right draws its

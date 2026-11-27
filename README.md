@@ -78,6 +78,8 @@ uv run pong choose-width
 
 ‏Evaluation של שני ה-Scripted player-ים על הסט הרגיל, נגד Opponent בכל אחד מחמשת רוחבי ההיסט. אחרי כל Evaluation מודפסת שורת הסיכום שלו, ובסוף טבלה עם הממוצע של כל שחקן בכל רוחב ומה נכשל בכל רוחב, והרוחב שנבחר לפי הכלל של [#7](https://github.com/sela27/pong_ai_bot/issues/7). אם אף רוחב לא עובר, הפקודה אומרת את זה, לא בוחרת, ונכשלת. בתיקו בממוצע של המנבא נבחר הרחב מבין הרוחבים, והפקודה אומרת שהיה תיקו ([#62](https://github.com/sela27/pong_ai_bot/issues/62)). זה סקריפט ולא בדיקה: 10 ה-Evaluation-ים לוקחים כמה דקות. הפקודה לא נועלת את הרוחב.
 
+הרוחב נבחר וננעל על 100% מחצי גובה ה-Paddle, כברירת המחדל של ה-Opponent, בכל מקום שהוא משחק, גם ב-`pong play` וב-`pong evaluate` ([#31](https://github.com/sela27/pong_ai_bot/issues/31), לפי הכלל של [#62](https://github.com/sela27/pong_ai_bot/issues/62)). שתי בדיקות איטיות, `uv run pytest -m slow`, בודקות שברוחב הנעול שני ה-Scripted player-ים עדיין עוברים את הכלל.
+
 ## רשימות בדיקה
 
 - [בדיקת החלון בעין](docs/checklists/window.md): אחרי כל שינוי בחלון.
