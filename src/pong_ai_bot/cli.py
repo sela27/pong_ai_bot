@@ -20,8 +20,8 @@ from pong_ai_bot.learning_players import (
     milestone_evaluation,
 )
 from pong_ai_bot.run_directory import (
-    EVALUATIONS_FILE,
-    SETTINGS_FILE,
+    InvalidRunError,
+    NotARunError,
     RunDirectory,
     SavedFile,
 )
@@ -248,11 +248,17 @@ def _evaluate(
 ) -> int:
     """`pong evaluate`: the Evaluation, on the regular set, of a Scripted player,
     or of a Milestone after its Run, at the Milestone's Step."""
+    if args.output is not None and RunDirectory.is_results_file(args.output):
+        raise _Refused(
+            f"{args.output} is a Run's file of results, and only the Run itself "
+            "adds to it, so that an Evaluation after it never changes the Milestone "
+            "it chooses. Give --output another file."
+        )
     if args.scripted is not None:
         evaluation, step = evaluate_scripted_player(args.scripted, pong=pong), None
     else:
         run, milestone = _milestone_to_evaluate(
-            args.milestone, output=args.output, learning_players=learning_players
+            args.milestone, learning_players=learning_players
         )
         evaluation = evaluate_milestone(run, milestone, players=learning_players)
         step = milestone.step
@@ -265,38 +271,24 @@ def _evaluate(
 
 
 def _milestone_to_evaluate(
-    path: Path,
-    *,
-    output: Path | None,
-    learning_players: Mapping[str, LearningPlayer],
+    path: Path, *, learning_players: Mapping[str, LearningPlayer]
 ) -> tuple[RunDirectory, SavedFile]:
-    """The Milestone at `path` and its Run, for `pong evaluate` to evaluate, adding
-    its line to `output` if given. If it can't, it is _Refused."""
+    """The Milestone at `path` and its Run, for `pong evaluate` to evaluate, its
+    player one of `learning_players`. If it can't, it is _Refused."""
     not_a_milestone = _Refused(
         f"{path} is not a Milestone of a Run: a Run's directory keeps its "
         "Milestones, named by their Steps, such as milestone_000500000.pt."
     )
-    if not (path.parent / SETTINGS_FILE).is_file():
+    if not RunDirectory.holds_a_run(path.parent):
         raise not_a_milestone
     run = _open_run(path.parent)
-    milestone = next(
-        (saved for saved in run.milestones() if saved.path.name == path.name), None
-    )
+    milestone = run.milestone_file(path)
     if milestone is None:
         raise not_a_milestone
     if not learning_players[run.player].evaluated:
         raise _Refused(
             f"The Run's player, {run.player}, has no Evaluation: a test "
             "environment's Games have no score to count them by."
-        )
-    if (
-        output is not None
-        and output.resolve() == (run.path / EVALUATIONS_FILE).resolve()
-    ):
-        raise _Refused(
-            f"Only the Run itself adds to its {EVALUATIONS_FILE}, so that an "
-            "Evaluation after it never changes the Milestone it chooses. Give "
-            "--output another file."
         )
     return run, milestone
 
@@ -396,9 +388,12 @@ def _train(
             if hasattr(args, field.name)
         }
     )
-    run = RunDirectory.create(
-        player=args.player, name=args.name, seed=args.seed, settings=settings
-    )
+    try:
+        run = RunDirectory.create(
+            player=args.player, name=args.name, seed=args.seed, settings=settings
+        )
+    except InvalidRunError as error:
+        raise _Refused(str(error)) from None
     print(f"The Run's directory: {run.path}", flush=True)
     return _train_or_resume(
         run,
@@ -431,7 +426,7 @@ def _resume(
     # its best Milestone: until it has its Confirmation, its resume gives it.
     player = learning_players[run.player]
     evaluated = player.evaluated
-    if not evaluated and any(saved.step == budget for saved in run.milestones()):
+    if not evaluated and run.milestone(budget) is not None:
         print(
             f"The Run reached its Budget, {budget:,} Steps, already: there is "
             "nothing to resume."
@@ -454,12 +449,16 @@ def _resume(
 
 def _open_run(path: Path) -> RunDirectory:
     """The Run whose directory is `path`, with each warning of opening it, such as
-    that the code is at another commit than the Run was created at, printed."""
+    that the code is at another commit than the Run was created at, printed. If
+    `path` holds no Run, it is _Refused."""
     # Shown as a line of their own rather than as Python shows a warning, with the
     # line of code that gave it.
     with warnings.catch_warnings(record=True) as warned:
         warnings.simplefilter("always")
-        run = RunDirectory.open(path)
+        try:
+            run = RunDirectory.open(path)
+        except NotARunError as error:
+            raise _Refused(str(error)) from None
     for warning in warned:
         print(f"Warning: {warning.message}", file=sys.stderr)
     return run

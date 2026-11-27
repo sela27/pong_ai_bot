@@ -154,6 +154,29 @@ def test_pong_train_refuses_the_cpu_unless_asked_and_creates_no_run(
     assert not runs.exists()
 
 
+@pytest.mark.parametrize(
+    ("option", "reason"),
+    [
+        # The Evaluation's seeds start there, so a Run never trains on a Game an
+        # Evaluation plays (#13).
+        (["--seed", "1000000"], "below 1,000,000"),
+        # The name goes in the Run directory's name.
+        (["--name", "a/b"], "letters, digits"),
+    ],
+    ids=["seed", "name"],
+)
+def test_pong_train_refuses_a_seed_or_name_a_run_can_t_have_and_creates_no_run(
+    runs: Path, capsys: pytest.CaptureFixture[str], option: list[str], reason: str
+) -> None:
+    run = ["--player", "test-env-1", "--name", "tiny", "--seed", "1"]
+
+    exit_code = main(["train", *run, "--device", "cpu", *option])
+
+    assert exit_code == 1
+    assert reason in capsys.readouterr().err.splitlines()[-1]
+    assert not runs.exists()
+
+
 def test_pong_train_has_an_option_for_each_run_setting_with_its_default(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -341,6 +364,20 @@ def test_pong_resume_refuses_the_cpu_unless_asked(
 
     assert exit_code == 1
     assert "--device cpu" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("given", ["no directory", "a directory of no Run"])
+def test_pong_resume_refuses_what_is_not_a_run_s_directory(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], given: str
+) -> None:
+    path = tmp_path / "a-run"
+    if given == "a directory of no Run":
+        path.mkdir()
+
+    exit_code = main(["resume", str(path), "--device", "cpu"])
+
+    assert exit_code == 1
+    assert "no Run" in capsys.readouterr().err.splitlines()[-1]
 
 
 def test_pong_resume_warns_if_the_code_is_at_another_commit_than_the_run(
@@ -740,31 +777,39 @@ def test_pong_evaluate_plays_a_milestone_after_its_run_and_records_nothing_in_it
     assert (run.path / "evaluations.jsonl").read_text(encoding="utf-8") == recorded
 
 
-def test_pong_evaluate_refuses_to_add_a_milestone_s_line_to_its_run_s_results(
+@pytest.mark.parametrize(
+    "evaluated",
+    ["its own Run's Milestone", "another Run's Milestone", "a Scripted player"],
+)
+def test_pong_evaluate_refuses_to_add_its_line_to_any_run_s_results(
     capsys: pytest.CaptureFixture[str],
     pong_with_fake_pong: PongCommand,
+    evaluated: str,
 ) -> None:
-    # Only the Run itself records its Evaluations, so that one after it never
-    # changes the Milestone it chooses (#17).
+    # Only a Run itself records its Evaluations, so that one after it never
+    # changes the Milestone it chooses (#17): a line of another player, or with
+    # no Step, would also leave it unable to choose one for its Confirmation.
     run = RunDirectory.create(player="fake-pong", name="tiny", seed=1, commit=A_COMMIT)
     milestone = milestone_moving_up(run, step=20)
-    files = sorted(run.path.iterdir())
+    other = RunDirectory.create(player="test-env-1", name="other", seed=2)
+    results = run if evaluated == "its own Run's Milestone" else other
+    files = {path: sorted(path.iterdir()) for path in (run.path, other.path)}
+    output = ["--output", str(results.path / "evaluations.jsonl")]
 
-    exit_code = pong_with_fake_pong(
-        [
-            "evaluate",
-            "--milestone",
-            str(milestone),
-            "--output",
-            str(run.path / "evaluations.jsonl"),
-        ]
-    )
+    if evaluated == "a Scripted player":
+        exit_code = main(
+            ["evaluate", "--scripted", "random", *output], pong=OneStepGames
+        )
+    else:
+        exit_code = pong_with_fake_pong(
+            ["evaluate", "--milestone", str(milestone), *output]
+        )
 
     assert exit_code == 1
     out, err = capsys.readouterr()
     assert out == ""
     assert "evaluations.jsonl" in err.splitlines()[-1], err
-    assert sorted(run.path.iterdir()) == files
+    assert {path: sorted(path.iterdir()) for path in files} == files
 
 
 @pytest.mark.parametrize(

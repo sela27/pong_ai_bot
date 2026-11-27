@@ -118,6 +118,14 @@ class SecondConfirmationError(RuntimeError):
     """A Run that has had its Confirmation given another (issue #16)."""
 
 
+class InvalidRunError(ValueError):
+    """A new Run with a seed, player or name a Run can't have."""
+
+
+class NotARunError(FileNotFoundError):
+    """A directory opened as a Run's that holds no Run: it has no settings file."""
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Confirmation:
     """A Run's Confirmation, as its directory recorded it."""
@@ -191,16 +199,18 @@ class RunDirectory:
         `settings` are the defaults unless given. `commit` is the code's, the
         commit checked out, unless given; `now` is the time the Run is created at,
         the local time unless given. A Run's directory is never reused: if it
-        exists already, it fails.
+        exists already, it fails. A seed of 1,000,000 or more, or a player or name
+        that can't name a directory, fails with an InvalidRunError, with nothing
+        created.
         """
         if seed >= SEED_LIMIT:
-            raise ValueError(
+            raise InvalidRunError(
                 f"A Run's seed must be below {SEED_LIMIT:,}, the Evaluation's seeds; "
                 f"got {seed:,}."
             )
         for part, value in (("player", player), ("name", name)):
             if not re.fullmatch(r"[A-Za-z0-9_-]+", value):
-                raise ValueError(
+                raise InvalidRunError(
                     f"A Run's {part} must be letters, digits, '-' and '_' only, to "
                     f"name its directory; got {value!r}."
                 )
@@ -243,7 +253,8 @@ class RunDirectory:
         settings: RunSettings | None = None,
         current_commit: Commit | None = None,
     ) -> RunDirectory:
-        """An existing Run's directory, as its settings file recorded it.
+        """An existing Run's directory, as its settings file recorded it. If
+        `path` holds no Run, it fails with a NotARunError.
 
         A Run's settings never change: given `settings` other than the recorded
         ones, it fails, naming each setting that differs. If the code is now at
@@ -251,6 +262,11 @@ class RunDirectory:
         CommitChangedWarning. `current_commit` is the commit checked out, unless
         given.
         """
+        if not cls.holds_a_run(path):
+            raise NotARunError(
+                f"{path} holds no Run: a Run's directory has its settings file, "
+                f"{SETTINGS_FILE}."
+            )
         record = json.loads((path / SETTINGS_FILE).read_text(encoding="utf-8"))
         recorded = record["settings"]
         run = cls(
@@ -285,6 +301,21 @@ class RunDirectory:
                 stacklevel=2,
             )
         return run
+
+    @staticmethod
+    def holds_a_run(path: Path) -> bool:
+        """Whether `path` is a Run's directory: one with its settings file."""
+        return (path / SETTINGS_FILE).is_file()
+
+    @staticmethod
+    def is_results_file(path: Path) -> bool:
+        """Whether `path` is a Run's file of results, where the Run, and only it,
+        records its Milestones' Evaluations and its Confirmation: its
+        evaluations.jsonl, whether written yet or not, in any Run's directory."""
+        path = path.resolve()
+        return os.path.normcase(path.name) == os.path.normcase(
+            EVALUATIONS_FILE
+        ) and RunDirectory.holds_a_run(path.parent)
 
     def save_checkpoint(
         self, step: int, write: Callable[[BinaryIO], object]
@@ -326,6 +357,19 @@ class RunDirectory:
     def milestones(self) -> list[SavedFile]:
         """The Run's Milestones, by Step."""
         return self._saved(Kind.MILESTONE)
+
+    def milestone(self, step: int) -> SavedFile | None:
+        """The Run's Milestone at `step`, or None if it saved none there."""
+        return next((saved for saved in self.milestones() if saved.step == step), None)
+
+    def milestone_file(self, path: Path) -> SavedFile | None:
+        """The Run's Milestone that is the file `path`, or None if `path` is no
+        Milestone of the Run's."""
+        path = path.resolve()
+        return next(
+            (saved for saved in self.milestones() if saved.path.resolve() == path),
+            None,
+        )
 
     def newest(self) -> SavedFile | None:
         """The file saved at the Run's latest Step, a checkpoint or a Milestone, or

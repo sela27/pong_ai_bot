@@ -426,7 +426,8 @@ def _play_run(
         measured = run.evaluations()
         # max keeps the first of a tie.
         best = max(sorted(measured), key=lambda step: measured[step].summary.mean)
-        [milestone] = [saved for saved in run.milestones() if saved.step == best]
+        milestone = run.milestone(best)
+        assert milestone is not None
         try:
             result = evaluation(
                 milestone, seed_set=SeedSet.CONFIRMATION, stop=lambda: ctrl_c.pressed
@@ -466,7 +467,7 @@ def _play_run(
     # The Milestone of Step 0, and on a resume the one of the checkpoint's Step,
     # if a stop between the two files left it unsaved: the learner's network is
     # the checkpoint's, as it was at the Step.
-    if has_a_milestone(start) and start not in {m.step for m in run.milestones()}:
+    if has_a_milestone(start) and run.milestone(start) is None:
         run.save_milestone(start, _saving(learner.network_state_dict()))
     # A Milestone saved and not measured, as when Ctrl+C abandoned its Evaluation,
     # is measured before the Run goes on (#17).
@@ -478,7 +479,7 @@ def _play_run(
     # Run trains no more, as when a crash stopped it before its Confirmation, its
     # latest checkpoint before its end. The same goes once its training stopped at
     # a Milestone of at least stop_mean.
-    trained = settings.budget in {saved.step for saved in run.milestones()}
+    trained = run.milestone(settings.budget) is not None
     graphs.begin(start, resumes=resumes)
     stopped_at = train(
         env,
