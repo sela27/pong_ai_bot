@@ -3,17 +3,22 @@
 import argparse
 import secrets
 import sys
+import warnings
 from dataclasses import fields
 from enum import Enum
 from pathlib import Path
-from typing import get_args
+from typing import TYPE_CHECKING, get_args
 
 from pong_ai_bot.environment import PongEnv
 from pong_ai_bot.evaluation import Evaluation, SeedSet
 from pong_ai_bot.learning_players import LEARNING_PLAYERS
+from pong_ai_bot.run_directory import RunDirectory
 from pong_ai_bot.run_settings import RunSettings
 from pong_ai_bot.scripted_players import SCRIPTED_PLAYERS, evaluate_scripted_player
 from pong_ai_bot.width_choice import choose_width
+
+if TYPE_CHECKING:
+    import torch
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -103,6 +108,26 @@ def main(argv: list[str] | None = None) -> int:
         help="where to train: the graphics card, the default, or the CPU",
     )
     _add_run_settings(train_command)
+    resume_command = commands.add_parser(
+        "resume",
+        help="resume a Run that stopped, by its directory",
+        description=(
+            "Resume a Run that stopped, by Ctrl+C or by a crash, as the same Run: "
+            "from its latest full checkpoint, with a new Game, to its Budget. Its "
+            "settings are read from its settings file and never change. It warns "
+            "if the code is at another commit than the Run was created at, and "
+            "refuses the CPU unless --device cpu asks for it."
+        ),
+    )
+    resume_command.add_argument(
+        "run", type=Path, metavar="RUN_DIRECTORY", help="the Run's directory"
+    )
+    resume_command.add_argument(
+        "--device",
+        choices=["cuda", "cpu"],
+        default="cuda",
+        help="where to train: the graphics card, the default, or the CPU",
+    )
     args = parser.parse_args(argv)
 
     if args.command == "play":
@@ -118,6 +143,8 @@ def main(argv: list[str] | None = None) -> int:
         return _choose_width()
     elif args.command == "train":
         return _train(args)
+    elif args.command == "resume":
+        return _resume(args)
     return 0
 
 
@@ -220,30 +247,32 @@ _STOPPED_BY_CTRL_C = 130
 stopped by Ctrl+C: 128 and SIGINT's number, 2."""
 
 
-def _train(args: argparse.Namespace) -> int:
-    # Only here: PyTorch takes seconds to import, and the other commands don't
-    # need it.
+def _training_device(name: str) -> torch.device | None:
+    """The device `pong train` or `pong resume` trains on, by its `--device`
+    `name`, printed; or None, with the reason printed, if it refuses the CPU
+    because PyTorch sees no graphics card (issue #11)."""
     import torch
-    from torch.utils.tensorboard import SummaryWriter
 
-    from pong_ai_bot.keep_awake import keep_windows_awake
-    from pong_ai_bot.learner import Learner, LearnerSettings
-    from pong_ai_bot.run_directory import RunDirectory
-    from pong_ai_bot.training import train_run
-
-    if args.device == "cuda" and not torch.cuda.is_available():
+    if name == "cuda" and not torch.cuda.is_available():
         print(
             "PyTorch sees no graphics card, and on the CPU a Run trains about 20 "
             "times slower. Check that PyTorch is the cu126 build (README), or pass "
             "--device cpu to train on the CPU on purpose.",
             file=sys.stderr,
         )
-        return 1
-    device = torch.device(args.device)
+        return None
+    device = torch.device(name)
     if device.type == "cuda":
         print(f"Device: cuda ({torch.cuda.get_device_name(device)})")
     else:
         print("Device: cpu")
+    return device
+
+
+def _train(args: argparse.Namespace) -> int:
+    device = _training_device(args.device)
+    if device is None:
+        return 1
 
     settings = RunSettings(
         **{
@@ -256,28 +285,88 @@ def _train(args: argparse.Namespace) -> int:
         player=args.player, name=args.name, seed=args.seed, settings=settings
     )
     print(f"The Run's directory: {run.path}", flush=True)
+    return _train_or_resume(run, device, resumed=False)
 
-    player = LEARNING_PLAYERS[args.player]
-    # The network's first weights come from the Run's seed too.
-    torch.manual_seed(args.seed)
+
+def _resume(args: argparse.Namespace) -> int:
+    device = _training_device(args.device)
+    if device is None:
+        return 1
+    # Shown as a line of their own, such as that the commit changed, rather than
+    # as Python shows a warning, with the line of code that gave it.
+    with warnings.catch_warnings(record=True) as warned:
+        warnings.simplefilter("always")
+        run = RunDirectory.open(args.run)
+    for warning in warned:
+        print(f"Warning: {warning.message}", file=sys.stderr)
+    budget = run.settings.budget
+    # The Run's end saves a Milestone at its Budget, which may come after its
+    # latest checkpoint.
+    if any(saved.step == budget for saved in run.milestones()):
+        print(
+            f"The Run reached its Budget, {budget:,} Steps, already: there is "
+            "nothing to resume."
+        )
+        return 0
+    if not run.checkpoints():
+        print(
+            "The Run has no full checkpoint to resume from: it saves its first at "
+            f"Step {run.settings.checkpoint_every:,}, or when Ctrl+C stops it. "
+            "Start a new Run instead.",
+            file=sys.stderr,
+        )
+        return 1
+    return _train_or_resume(run, device, resumed=True)
+
+
+def _train_or_resume(run: RunDirectory, device: torch.device, *, resumed: bool) -> int:
+    """Train the Run `run` on `device`, a new one or, if `resumed`, one resumed
+    from its latest full checkpoint, with a new learner of its player, and say how
+    it stopped."""
+    # Only here: PyTorch takes seconds to import, and the other commands don't
+    # need it.
+    import torch
+    from torch.utils.tensorboard import SummaryWriter
+
+    from pong_ai_bot.keep_awake import keep_windows_awake
+    from pong_ai_bot.learner import Learner, LearnerSettings
+    from pong_ai_bot.training import resume_run, train_run
+
+    settings = run.settings
+    player = LEARNING_PLAYERS[run.player]
+    # The network's first weights come from the Run's seed too. A resumed Run's
+    # learner takes on its checkpoint's instead.
+    torch.manual_seed(run.seed)
     learner = Learner(
         player.make_network().to(device),
         actions=player.actions,
         stack_length=player.stack_length,
         settings=LearnerSettings.of_run(settings),
-        seed=args.seed,
+        seed=run.seed,
     )
+    purge_step = None
+    if resumed:
+        step = run.checkpoints()[-1].step
+        print(
+            f"Resuming the Run at Step {step:,}, from its latest full checkpoint, "
+            f"with a new Game. A new replay buffer fills for {settings.fill_steps:,} "
+            "Steps before the learning goes on."
+        )
+        # TensorBoard hides every point from this Step on that was written before:
+        # those written after the checkpoint, which the resumed Run writes again.
+        purge_step = step + 1
     print(
         "Ctrl+C stops the Run once its Step is over, with a full checkpoint; a "
         "second Ctrl+C stops it at once, without one.",
         flush=True,
     )
+    play = resume_run if resumed else train_run
     try:
         # The graphs go in the Run's directory, so that one TensorBoard on the
         # Runs' directory shows every Run. However the Run stops, the writer is
         # closed, with all it was given written.
-        with SummaryWriter(log_dir=str(run.path)) as writer:
-            stopped_at = train_run(
+        with SummaryWriter(log_dir=str(run.path), purge_step=purge_step) as writer:
+            stopped_at = play(
                 run,
                 player.make_env(),
                 learner,

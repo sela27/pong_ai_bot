@@ -12,6 +12,7 @@ Ctrl+C is pressed, and the tests call it themselves, while the Run plays a chose
 Step.
 """
 
+import shutil
 import signal
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -29,7 +30,7 @@ from gymnasium import spaces
 from pong_ai_bot.run_directory import Commit, RunDirectory
 from pong_ai_bot.run_settings import RunSettings
 from pong_ai_bot.test_environments import ConstantRewardEnv, TwoStepEnv
-from pong_ai_bot.training import Transition, train_run
+from pong_ai_bot.training import Transition, resume_run, train_run
 
 A_COMMIT = Commit(
     sha="0123456789abcdef0123456789abcdef01234567", uncommitted_changes=False
@@ -99,6 +100,9 @@ class CountingLearner:
 
     def state_dict(self) -> dict[str, Any]:
         return {"given": self.given}
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        self.given = state["given"]
 
     def network_state_dict(self) -> dict[str, Any]:
         return {"weights after": self.given}
@@ -364,3 +368,158 @@ def test_the_q_graph_s_inputs_come_from_a_game_of_random_actions() -> None:
     counts = [int(np.sum(inputs[1:, 0] == action)) for action in range(3)]
     assert sum(counts) == 999
     assert min(counts) > 250, f"each Action's count of the 999: {counts}"
+
+
+def stopped_by_ctrl_c(settings: RunSettings, *, at: int) -> RunDirectory:
+    """A new Run with `settings`, stopped by Ctrl+C in its Step `at`, with a full
+    checkpoint there, and reopened, as `pong resume` opens it."""
+    run = new_run(settings)
+    train_run(
+        run,
+        ConstantRewardEnv(),
+        CtrlCLearner(at=at),
+        stay_awake=Awake(),
+        writer=NoGraphs(),
+    )
+    return RunDirectory.open(run.path, current_commit=A_COMMIT)
+
+
+def test_a_resumed_run_plays_on_from_its_latest_checkpoint_to_its_budget() -> None:
+    run = stopped_by_ctrl_c(
+        RunSettings(budget=12, checkpoint_every=5, milestone_every=10), at=7
+    )
+    learner = CountingLearner()
+
+    stopped_at = resume_run(
+        run, ConstantRewardEnv(), learner, stay_awake=Awake(), writer=NoGraphs()
+    )
+
+    # The learner takes on its state of Step 7, and learns from Steps 8 to 12.
+    assert stopped_at == 12
+    assert learner.given == 12
+    # The Step count goes on from 7: a checkpoint at Step 10, and Milestones at 10
+    # and at the Budget.
+    assert [saved.step for saved in run.checkpoints()] == [7, 10]
+    assert [saved.step for saved in run.milestones()] == [0, 10, 12]
+
+
+def test_each_resume_counts_one_more_in_the_run_s_checkpoints() -> None:
+    run = stopped_by_ctrl_c(
+        RunSettings(budget=12, checkpoint_every=5, milestone_every=10), at=7
+    )
+
+    # The first resume stopped by Ctrl+C in Step 9, and the second to the Budget.
+    resume_run(
+        run,
+        ConstantRewardEnv(),
+        CtrlCLearner(at=9),
+        stay_awake=Awake(),
+        writer=NoGraphs(),
+    )
+    assert torch.load(run.checkpoints()[-1].path) == {
+        "learner": {"given": 9},
+        "step": 9,
+        "resumes": 1,
+    }
+    resume_run(
+        run,
+        ConstantRewardEnv(),
+        CountingLearner(),
+        stay_awake=Awake(),
+        writer=NoGraphs(),
+    )
+
+    assert torch.load(run.checkpoints()[-1].path) == {
+        "learner": {"given": 10},
+        "step": 10,
+        "resumes": 2,
+    }
+
+
+class EpsilonRecordingLearner(CountingLearner):
+    """A fake learner that records the ε of each Action it chooses."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.epsilons: list[float] = []
+
+    def choose_action(self, observation: Any, epsilon: float) -> int:
+        self.epsilons.append(epsilon)
+        return super().choose_action(observation, epsilon)
+
+
+def test_a_resumed_run_s_epsilon_goes_on_from_its_value_at_the_checkpoint() -> None:
+    # ε falls from 1 by 0.1 a Step, to 0 at Step 10.
+    run = stopped_by_ctrl_c(
+        RunSettings(
+            budget=12,
+            checkpoint_every=5,
+            milestone_every=10,
+            epsilon_start=1.0,
+            epsilon_end=0.0,
+            epsilon_decay_steps=10,
+        ),
+        at=7,
+    )
+    learner = EpsilonRecordingLearner()
+
+    resume_run(run, ConstantRewardEnv(), learner, stay_awake=Awake(), writer=NoGraphs())
+
+    # Step 8 is chosen with ε after 7 Steps, 0.3, as it would have been with no
+    # stop, and so on to the Budget.
+    assert learner.epsilons == pytest.approx([0.3, 0.2, 0.1, 0.0, 0.0])
+
+
+def test_windows_is_asked_to_stay_awake_through_a_resumed_run_and_released() -> None:
+    run = stopped_by_ctrl_c(
+        RunSettings(budget=12, checkpoint_every=5, milestone_every=10), at=7
+    )
+    awake = Awake()
+    learner = AwakeCheckingLearner(awake)
+
+    resume_run(run, ConstantRewardEnv(), learner, stay_awake=awake, writer=NoGraphs())
+
+    # Steps 8 to 12.
+    assert learner.held_at_each_step == [True] * 5
+    assert awake.requests == 1
+    assert not awake.held
+
+
+class SeedRecordingEnv(ConstantRewardEnv):
+    """Test environment 1, which records the seed of each reset, or None for a
+    reset with none."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.seeds: list[int | None] = []
+
+    def reset(
+        self, *, seed: int | None = None, options: dict[str, Any] | None = None
+    ) -> tuple[npt.NDArray[np.float32], dict[str, Any]]:
+        self.seeds.append(seed)
+        return super().reset(seed=seed, options=options)
+
+
+def test_every_resume_from_a_checkpoint_plays_the_same_games_not_the_run_s_first(
+    runs: Path,
+) -> None:
+    run = stopped_by_ctrl_c(
+        RunSettings(budget=12, checkpoint_every=5, milestone_every=10), at=7
+    )
+    # The same Run, to resume twice from the same checkpoint.
+    copy = RunDirectory.open(
+        shutil.copytree(run.path, runs / "copy"), current_commit=A_COMMIT
+    )
+
+    first_seeds = []
+    for resumed in (run, copy):
+        env = SeedRecordingEnv()
+        resume_run(
+            resumed, env, CountingLearner(), stay_awake=Awake(), writer=NoGraphs()
+        )
+        first_seeds.append(env.seeds[0])
+
+    # The Run's first Game, and the Q graph's, were reset with the Run's seed, 1.
+    first, again = first_seeds
+    assert first is not None and first != 1, f"the first Game's seed: {first}"
+    assert again == first

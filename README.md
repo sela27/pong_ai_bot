@@ -67,6 +67,18 @@ uv run pong train --player test-env-1 --name tiny --seed 1 --device cpu --budget
 
 בינתיים השחקנים היחידים הם של ארבע סביבות הבדיקה, `test-env-1` עד `test-env-4`, כדי שסוכן יוכל להריץ Run-ים זעירים בתיקייה זמנית ([#9](https://github.com/sela27/pong_ai_bot/issues/9)).
 
+### להמשיך
+
+```
+uv run pong resume ~/pong_ai_bot_runs/2026-11-27_1430_test-env-1_tiny_seed1 --device cpu
+```
+
+המשך של Run שנעצר, ב-`Ctrl+C` או בקריסה, כאותו Run ([#10](https://github.com/sela27/pong_ai_bot/issues/10)). הפקודה מקבלת רק את תיקיית ה-Run: ההגדרות נקראות מקובץ ההגדרות שלה, ואי אפשר לשנות אותן. אם הקוד ב-commit אחר מזה שה-Run נוצר בו, מוצגת אזהרה, וה-Run ממשיך.
+
+ה-Run ממשיך מה-checkpoint המלא האחרון, עם Game חדש. מונה ה-Step-ים ממשיך משם, ו-ε איתו, ו-`run/resumes` עולה ב-1. ה-buffer לא נשמר, ולכן buffer חדש מתמלא במדיניות הנוכחית לפני שהלמידה חוזרת, וה-Step-ים של המילוי נספרים ב-Budget ([#14](https://github.com/sela27/pong_ai_bot/issues/14)). מה שנכתב לגרפים אחרי ה-checkpoint נמחק מ-TensorBoard, כדי שהקווים לא יחזרו אחורה. ‏Run שהגיע ל-Budget לא ממשיך, כי אין מה להמשיך. ‏Run שנעצר לפני ה-checkpoint הראשון לא ממשיך: מתחילים Run חדש.
+
+כמו `pong train`, היא מדפיסה על איזה מכשיר היא רצה ומסרבת לרוץ על ה-CPU בלי `--device cpu`, ‏Windows לא נרדם בזמן שה-Run רץ, ו-`Ctrl+C` עוצר אותו באותה צורה.
+
 ### לראות את הגרפים
 
 ```

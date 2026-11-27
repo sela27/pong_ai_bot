@@ -4,7 +4,8 @@ Each Step, the learner chooses an Action, with ε by the Step counter alone, and
 learns from the Step's transition. The loop never reads the `info`. It knows
 nothing of Pong, and of files only through the Run directory: a Run's loop saves
 its full checkpoints and its Milestones there, and stops at its Budget, or when
-Ctrl+C is pressed. It writes the Run's graphs too, through the writer it is given.
+Ctrl+C is pressed. A Run that stopped resumes from its latest full checkpoint, as
+the same Run. The loop writes the Run's graphs too, through the writer it is given.
 """
 
 from collections.abc import Callable
@@ -17,7 +18,7 @@ import numpy as np
 import numpy.typing as npt
 from gymnasium import spaces
 
-from pong_ai_bot.ctrl_c import catch_ctrl_c
+from pong_ai_bot.ctrl_c import CtrlC, catch_ctrl_c
 from pong_ai_bot.graphs import ScalarWriter, TrainingGraphs
 from pong_ai_bot.run_settings import RunSettings
 
@@ -92,6 +93,10 @@ class RunLearner(Protocol):
         """All of the learner's state, for a full checkpoint."""
         ...
 
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        """Take on `state`, as a full checkpoint holds it, to resume a Run."""
+        ...
+
     def network_state_dict(self) -> dict[str, Any]:
         """The network's weights alone, for a Milestone."""
         ...
@@ -104,20 +109,21 @@ def train(
     steps: int,
     epsilon: EpsilonSchedule,
     seed: int,
+    start: int = 0,
     after_step: Callable[[int], None] | None = None,
     stop: Callable[[], bool] | None = None,
     graphs: TrainingGraphs | None = None,
 ) -> int:
-    """Play `steps` Steps against `env`, a Game after another, the first reset with
-    `seed`, with `learner` choosing each Action and learning from each Step.
+    """Play Steps against `env`, from the Run's Step count `start` until it is
+    `steps`, a Game after another, the first reset with `seed`, with `learner`
+    choosing each Action and learning from each Step.
 
     After each Step, `graphs`, if given, are told of it, and then `after_step`, if
-    given, gets how many Steps have been played. Before each Step, `stop`, if
-    given, says whether to stop there instead. It returns how many Steps were
-    played.
+    given, gets the Run's Step count. Before each Step, `stop`, if given, says
+    whether to stop there instead. It returns the Run's Step count it stopped at.
     """
     observation, _ = env.reset(seed=seed)
-    for step in range(steps):
+    for step in range(start, steps):
         if stop is not None and stop():
             return step
         action = learner.choose_action(observation, epsilon.at(step))
@@ -201,48 +207,140 @@ def train_run(
     All along, it holds the request `stay_awake` makes, that Windows doesn't sleep,
     and releases it however the Run ends.
     """
+    with stay_awake(), catch_ctrl_c() as ctrl_c:
+        q_graph_inputs = _q_graph_inputs(env, seed=run.seed)
+        run.save_q_graph_inputs(q_graph_inputs)
+        run.save_milestone(0, _saving(learner.network_state_dict()))
+        return _play_run(
+            run,
+            env,
+            learner,
+            start=0,
+            resumes=0,
+            seed=run.seed,
+            q_graph_inputs=q_graph_inputs,
+            writer=writer,
+            ctrl_c=ctrl_c,
+        )
+
+
+def resume_run(
+    run: RunDirectory,
+    env: gym.Env[Any, Any],
+    learner: RunLearner,
+    *,
+    stay_awake: Callable[[], AbstractContextManager[object]],
+    writer: ScalarWriter,
+) -> int:
+    """Resume the Run `run` against `env`, from its latest full checkpoint to its
+    Budget, with `learner`, a new one, and write its graphs through `writer`. The
+    Run must have a full checkpoint.
+
+    The learner takes on the state the checkpoint holds, and the Run goes on from
+    its Step, as the same Run: the Step count, and ε with it, go on from there, and
+    the Run counts one more resume, in its checkpoints and its graph. The Game
+    that was being played isn't kept: the Run starts a new one, the same on every
+    resume from that checkpoint. The replay buffer isn't kept either, so the
+    learner's new one fills by its current choices before it learns on, and the
+    filling's Steps count toward the Budget, as at the Run's start (#17). The Q
+    graph's inputs are the ones the Run saved.
+
+    It saves its files, and stops at its Budget or by Ctrl+C, holding the request
+    `stay_awake` makes, as `train_run` does, and returns the Step it stopped at.
+    """
     # Only here: PyTorch takes seconds to import, and the ε schedule doesn't need
     # it.
     import torch
 
+    with stay_awake(), catch_ctrl_c() as ctrl_c:
+        checkpoint = torch.load(run.checkpoints()[-1].path)
+        learner.load_state_dict(checkpoint["learner"])
+        return _play_run(
+            run,
+            env,
+            learner,
+            start=checkpoint["step"],
+            resumes=checkpoint["resumes"] + 1,
+            seed=_resumed_game_seed(run.seed, step=checkpoint["step"]),
+            q_graph_inputs=run.q_graph_inputs(),
+            writer=writer,
+            ctrl_c=ctrl_c,
+        )
+
+
+def _resumed_game_seed(run_seed: int, *, step: int) -> int:
+    """The seed of the first Game of the Run of `run_seed` resumed at its Step
+    `step`: drawn from both, as an environment draws the seed of its next Game, so
+    that every resume from the same checkpoint plays the same Games, and not the
+    Run's first ones."""
+    return int(np.random.default_rng([run_seed, step]).integers(2**63))
+
+
+def _saving(state: dict[str, Any]) -> Callable[[BinaryIO], None]:
+    """A function that writes `state` into the file it is given."""
+    # Only here: PyTorch takes seconds to import, and the ε schedule doesn't need
+    # it.
+    import torch
+
+    return lambda file: torch.save(state, file)
+
+
+def _play_run(
+    run: RunDirectory,
+    env: gym.Env[Any, Any],
+    learner: RunLearner,
+    *,
+    start: int,
+    resumes: int,
+    seed: int,
+    q_graph_inputs: npt.NDArray[Any],
+    writer: ScalarWriter,
+    ctrl_c: CtrlC,
+) -> int:
+    """Play the Run `run` against `env` with `learner`, from its Step count `start`
+    to its Budget, resumed `resumes` times so far, the first Game reset with
+    `seed`, saving its files and writing its graphs, with `q_graph_inputs` the
+    fixed inputs of its Q graph.
+
+    It stops early, with a full checkpoint, once `ctrl_c` is pressed, and returns
+    the Step it stopped at.
+    """
     settings = run.settings
     epsilon = EpsilonSchedule.of_run(settings)
 
-    def saving(state: dict[str, Any]) -> Callable[[BinaryIO], None]:
-        return lambda file: torch.save(state, file)
-
     def save_checkpoint(step: int) -> None:
-        checkpoint = {"learner": learner.state_dict(), "step": step, "resumes": 0}
-        run.save_checkpoint(step, saving(checkpoint))
+        checkpoint = {
+            "learner": learner.state_dict(),
+            "step": step,
+            "resumes": resumes,
+        }
+        run.save_checkpoint(step, _saving(checkpoint))
 
     def after_step(step: int) -> None:
         if step % settings.checkpoint_every == 0:
             save_checkpoint(step)
         if step % settings.milestone_every == 0 or step == settings.budget:
-            run.save_milestone(step, saving(learner.network_state_dict()))
+            run.save_milestone(step, _saving(learner.network_state_dict()))
 
-    with stay_awake(), catch_ctrl_c() as ctrl_c:
-        q_graph_inputs = _q_graph_inputs(env, seed=run.seed)
-        run.save_q_graph_inputs(q_graph_inputs)
-        graphs = TrainingGraphs(
-            writer,
-            max_q=lambda: float(learner.q_values(q_graph_inputs).max(axis=1).mean()),
-            epsilon=epsilon.at,
-        )
-        run.save_milestone(0, saving(learner.network_state_dict()))
-        graphs.begin(0, resumes=0)
-        stopped_at = train(
-            env,
-            learner,
-            steps=settings.budget,
-            epsilon=epsilon,
-            seed=run.seed,
-            after_step=after_step,
-            stop=lambda: ctrl_c.pressed,
-            graphs=graphs,
-        )
-        # Unless the Step has its checkpoint already, as one of every so many.
-        checkpointed = {saved.step for saved in run.checkpoints()}
-        if stopped_at < settings.budget and stopped_at not in checkpointed:
-            save_checkpoint(stopped_at)
+    graphs = TrainingGraphs(
+        writer,
+        max_q=lambda: float(learner.q_values(q_graph_inputs).max(axis=1).mean()),
+        epsilon=epsilon.at,
+    )
+    graphs.begin(start, resumes=resumes)
+    stopped_at = train(
+        env,
+        learner,
+        steps=settings.budget,
+        epsilon=epsilon,
+        seed=seed,
+        start=start,
+        after_step=after_step,
+        stop=lambda: ctrl_c.pressed,
+        graphs=graphs,
+    )
+    # Unless the Step has its checkpoint already, as one of every so many.
+    checkpointed = {saved.step for saved in run.checkpoints()}
+    if stopped_at < settings.budget and stopped_at not in checkpointed:
+        save_checkpoint(stopped_at)
     return stopped_at
