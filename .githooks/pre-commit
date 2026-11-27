@@ -6,5 +6,21 @@ set -e
 # --locked also fails the commit when uv.lock is out of date with pyproject.toml.
 uv run --locked ruff format --check
 uv run --locked ruff check
-uv run --locked mypy
-uv run --locked pytest -q
+
+# mypy runs alongside the tests, to keep the hook under 15 s (#11). Its output
+# goes to a file and is printed after the tests', so the two don't interleave.
+mypy_out=$(mktemp)
+trap 'rm -f "$mypy_out"' EXIT
+trap 'exit 1' HUP INT TERM
+uv run --locked mypy > "$mypy_out" 2>&1 &
+mypy_pid=$!
+
+tests_status=0
+uv run --locked pytest -q || tests_status=$?
+mypy_status=0
+wait "$mypy_pid" || mypy_status=$?
+cat "$mypy_out"
+
+if [ "$tests_status" -ne 0 ] || [ "$mypy_status" -ne 0 ]; then
+    exit 1
+fi
