@@ -1,17 +1,21 @@
 """A Run's training loop, in a temporary directory: the files it saves at its Steps,
-the fixed inputs of its Q graph, its stop at the Budget or by Ctrl+C, and its
-request that Windows stays awake (issue #10).
+the fixed inputs of its Q graph, its stop at the Budget, at its first Milestone of
+19 or more, or by Ctrl+C, its one Confirmation, and its request that Windows stays
+awake (issues #10, #13, #14).
 
 The learner is a fake, with no network and no optimizer: creating the real one's
 optimizer takes seconds, too long for a fast test. So are the request to Windows,
 and TensorBoard's writer, which takes seconds to import: the graphs are checked by
-eye in TensorBoard, on a test environment's Run (#17). The environment is test
+eye in TensorBoard, on a test environment's Run (#17). So is the Evaluation, which
+plays no Game: no test ever plays the Confirmation's set (issue #16). The
+environment is test
 environment 1, whose every Game is one Step long, unless a test says otherwise.
 Ctrl+C is pressed without a real signal: Python calls the handler of SIGINT when
 Ctrl+C is pressed, and the tests call it themselves, while the Run plays a chosen
 Step.
 """
 
+import math
 import shutil
 import signal
 from collections.abc import Callable, Iterator
@@ -27,11 +31,17 @@ import pytest
 import torch
 from gymnasium import spaces
 
-from pong_ai_bot.evaluation import Evaluation, EvaluationStopped, GameResult
+from pong_ai_bot.evaluation import Evaluation, EvaluationStopped, GameResult, SeedSet
 from pong_ai_bot.run_directory import Commit, RunDirectory, SavedFile
 from pong_ai_bot.run_settings import RunSettings
 from pong_ai_bot.test_environments import ConstantRewardEnv, TwoStepEnv
-from pong_ai_bot.training import RunStop, Transition, resume_run, train_run
+from pong_ai_bot.training import (
+    ConfirmedRunError,
+    RunStop,
+    Transition,
+    resume_run,
+    train_run,
+)
 
 A_COMMIT = Commit(
     sha="0123456789abcdef0123456789abcdef01234567", uncommitted_changes=False
@@ -143,6 +153,9 @@ class FakeEvaluation:
     `ctrl_c_at` Steps, if given, and, as the real one does, it asks `stop` before
     each of its two Steps whether to abandon the Evaluation. It records how many
     transitions `learner`, if given, had been given when it evaluated each.
+
+    On the Confirmation's set, it records the Milestone's Step alone, and gives a
+    fixed Game, of Score margin 0.
     """
 
     def __init__(
@@ -154,11 +167,22 @@ class FakeEvaluation:
         self._ctrl_c_at = ctrl_c_at
         self._learner = learner
         self.evaluated: list[int] = []
-        """The Steps of the weights of each Milestone it was given, in order."""
+        """The Steps of the weights of each Milestone it was given on the regular
+        set, in order."""
         self.given_then: list[int] = []
-        """How many transitions `learner` had been given at each Evaluation."""
+        """How many transitions `learner` had been given at each Evaluation on the
+        regular set."""
+        self.confirmed: list[int] = []
+        """The Step of each Milestone it was given on the Confirmation's set."""
 
-    def __call__(self, milestone: SavedFile, *, stop: Callable[[], bool]) -> Evaluation:
+    def __call__(
+        self, milestone: SavedFile, *, seed_set: SeedSet, stop: Callable[[], bool]
+    ) -> Evaluation:
+        if seed_set is SeedSet.CONFIRMATION:
+            self.confirmed.append(milestone.step)
+            return Evaluation(
+                games=(GameResult(seed=0, score_margin=0, cut_off=False),)
+            )
         steps = torch.load(milestone.path)["weights after"]
         self.evaluated.append(steps)
         if self._learner is not None:
@@ -222,7 +246,8 @@ def test_each_evaluation_prints_its_summary_line_with_its_milestone_s_step(
     )
 
     # Score margins of -21 and -19 at Step 0, -11 and -9 at Step 10, and -9 and
-    # -7 at Step 12: each 1 away from their mean, and the second cut off.
+    # -7 at Step 12: each 1 away from their mean, and the second cut off. Then the
+    # Confirmation of the best, Step 12's, of one Game of Score margin 0.
     assert capsys.readouterr().out.splitlines() == [
         (
             "Evaluation on the regular set at Step 0: mean -20.00, std 1.00, "
@@ -235,6 +260,14 @@ def test_each_evaluation_prints_its_summary_line_with_its_milestone_s_step(
         (
             "Evaluation on the regular set at Step 12: mean -8.00, std 1.00, "
             "min -9, 0 of 2 Games won, 1 cut off"
+        ),
+        (
+            "Evaluation on the confirmation set at Step 12: mean +0.00, std 0.00, "
+            "min +0, 0 of 1 Games won, 0 cut off"
+        ),
+        (
+            "The Confirmation's mean, +0.00, is below 18: the Run didn't reach its "
+            "goal. It never goes on, and no other Milestone gets a Confirmation."
         ),
     ]
 
@@ -366,6 +399,240 @@ def test_ctrl_c_in_an_evaluation_abandons_it_and_stops_the_run_with_a_checkpoint
         "resumes": 0,
     }
     assert [saved.step for saved in run.milestones()] == milestones
+
+
+class FixedMeans:
+    """A fake of the Evaluation, which plays no Game and reads no file: it records
+    the Step of each Milestone it is asked for, with the set, and gives it a fixed
+    mean Score margin, of two Games one apart at most. On the regular set, it is
+    the one `means` holds for the Milestone's Step; on the Confirmation's, it is
+    `confirmation`.
+
+    Ctrl+C is pressed in the Confirmation, if `ctrl_c_in_confirmation`, and as the
+    real one does, it asks `stop` there whether to abandon it. If
+    `crash_in_confirmation`, the Confirmation stops the Run at once instead, as a
+    crash would.
+    """
+
+    def __init__(
+        self,
+        means: dict[int, float],
+        *,
+        confirmation: float = 0.0,
+        ctrl_c_in_confirmation: bool = False,
+        crash_in_confirmation: bool = False,
+    ) -> None:
+        self._means = means
+        self._confirmation = confirmation
+        self._ctrl_c_in_confirmation = ctrl_c_in_confirmation
+        self._crash_in_confirmation = crash_in_confirmation
+        self.asked: list[tuple[int, SeedSet]] = []
+        """The Step of each Milestone it was asked for, and the set, in order."""
+
+    def __call__(
+        self, milestone: SavedFile, *, seed_set: SeedSet, stop: Callable[[], bool]
+    ) -> Evaluation:
+        self.asked.append((milestone.step, seed_set))
+        if seed_set is SeedSet.CONFIRMATION:
+            if self._crash_in_confirmation:
+                raise KeyboardInterrupt
+            if self._ctrl_c_in_confirmation:
+                press_ctrl_c()
+            if stop():
+                raise EvaluationStopped
+            mean = self._confirmation
+        else:
+            mean = self._means[milestone.step]
+        # Two Games whose mean is `mean`, a whole number or a half.
+        low = math.floor(mean)
+        return Evaluation(
+            games=(
+                GameResult(seed=0, score_margin=low, cut_off=False),
+                GameResult(seed=1, score_margin=int(2 * mean) - low, cut_off=False),
+            )
+        )
+
+
+REGULAR, CONFIRMATION = SeedSet.REGULAR, SeedSet.CONFIRMATION
+
+
+@pytest.mark.parametrize(
+    ("means", "confirmed"),
+    [
+        ({0: -21, 10: 5, 20: 3, 23: 4}, 10),
+        # A tie: the earlier Milestone.
+        ({0: -21, 10: 5, 20: 5, 23: 4}, 10),
+    ],
+    ids=["best", "tie"],
+)
+def test_a_run_at_its_budget_gives_its_best_milestone_one_confirmation(
+    means: dict[int, float], confirmed: int
+) -> None:
+    # Milestones at Step 0, at every multiple of 10, and at the Budget, 23.
+    run = new_run(RunSettings(budget=23, checkpoint_every=5, milestone_every=10))
+    evaluation = FixedMeans(means, confirmation=2.5)
+
+    stopped = train_run(
+        run,
+        ConstantRewardEnv(),
+        CountingLearner(),
+        stay_awake=Awake(),
+        writer=NoGraphs(),
+        evaluation=evaluation,
+    )
+
+    assert stopped == RunStop(step=23, by_ctrl_c=False)
+    # Each Milestone on the regular set, as it is saved, and once the Run is over,
+    # the best of them alone on the Confirmation's.
+    assert evaluation.asked == [
+        (0, REGULAR),
+        (10, REGULAR),
+        (20, REGULAR),
+        (23, REGULAR),
+        (confirmed, CONFIRMATION),
+    ]
+    confirmation = run.confirmation()
+    assert confirmation is not None
+    assert (confirmation.step, confirmation.evaluation.summary.mean) == (confirmed, 2.5)
+
+
+@pytest.mark.parametrize(
+    ("means", "end"),
+    [
+        ({0: -21, 10: 19, 20: 21, 23: 21}, 10),
+        # 18.5 is below 19, and 19.5 isn't.
+        ({0: -21, 10: 18.5, 20: 19.5, 23: 21}, 20),
+    ],
+    ids=["exactly-19", "above-19"],
+)
+def test_a_run_stops_at_its_first_milestone_with_a_mean_of_at_least_19(
+    means: dict[int, float], end: int
+) -> None:
+    # Milestones at Step 0, at every multiple of 10, and at the Budget, 23.
+    run = new_run(
+        RunSettings(
+            budget=23, checkpoint_every=5, checkpoints_kept=10, milestone_every=10
+        )
+    )
+    learner = CountingLearner()
+    evaluation = FixedMeans(means)
+
+    stopped = train_run(
+        run,
+        ConstantRewardEnv(),
+        learner,
+        stay_awake=Awake(),
+        writer=NoGraphs(),
+        evaluation=evaluation,
+    )
+
+    # The Run is over at that Milestone's Step, with no Step after it, and that
+    # Milestone, the best of the Run's, is the one confirmed.
+    assert stopped == RunStop(step=end, by_ctrl_c=False)
+    assert learner.given == end
+    milestones = [step for step in (0, 10, 20) if step <= end]
+    assert [saved.step for saved in run.milestones()] == milestones
+    assert evaluation.asked == [(step, REGULAR) for step in milestones] + [
+        (end, CONFIRMATION)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("mean", "summary", "verdict"),
+    [
+        (
+            18.0,
+            "mean +18.00, std 0.00, min +18, 2 of 2 Games won, 0 cut off",
+            (
+                "The Confirmation's mean, +18.00, is at least 18: the Run reached "
+                "its goal."
+            ),
+        ),
+        (
+            17.5,
+            "mean +17.50, std 0.50, min +17, 2 of 2 Games won, 0 cut off",
+            (
+                "The Confirmation's mean, +17.50, is below 18: the Run didn't reach "
+                "its goal. It never goes on, and no other Milestone gets a "
+                "Confirmation."
+            ),
+        ),
+    ],
+    ids=["passed", "failed"],
+)
+def test_the_confirmation_prints_its_summary_line_and_whether_it_passed_18(
+    mean: float, summary: str, verdict: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The Run stops at its Milestone of Step 10.
+    run = new_run(RunSettings(budget=12, checkpoint_every=5, milestone_every=10))
+
+    train_run(
+        run,
+        ConstantRewardEnv(),
+        CountingLearner(),
+        stay_awake=Awake(),
+        writer=NoGraphs(),
+        evaluation=FixedMeans({0: -21, 10: 19}, confirmation=mean),
+    )
+
+    assert capsys.readouterr().out.splitlines()[-2:] == [
+        f"Evaluation on the confirmation set at Step 10: {summary}",
+        verdict,
+    ]
+
+
+def test_the_confirmation_graphs_its_mean_once_at_its_milestone_s_step() -> None:
+    # Milestones at Step 0, 10, and the Budget, 12: the best is Step 10's.
+    run = new_run(RunSettings(budget=12, checkpoint_every=5, milestone_every=10))
+    writer = RecordingWriter("confirmation/")
+
+    train_run(
+        run,
+        ConstantRewardEnv(),
+        CountingLearner(),
+        stay_awake=Awake(),
+        writer=writer,
+        evaluation=FixedMeans({0: -21, 10: 5, 12: 3}, confirmation=2.5),
+    )
+
+    assert writer.points == [("confirmation/mean", 10, 2.5)]
+
+
+def test_ctrl_c_in_the_confirmation_abandons_it_and_stops_the_run_with_a_checkpoint(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The Run stops at its Milestone of Step 10, which no checkpoint falls on.
+    run = new_run(
+        RunSettings(
+            budget=23, checkpoint_every=4, checkpoints_kept=10, milestone_every=10
+        )
+    )
+    writer = RecordingWriter("confirmation/")
+
+    stopped = train_run(
+        run,
+        ConstantRewardEnv(),
+        CountingLearner(),
+        stay_awake=Awake(),
+        writer=writer,
+        evaluation=FixedMeans({0: -21, 10: 19}, ctrl_c_in_confirmation=True),
+    )
+
+    assert stopped == RunStop(step=10, by_ctrl_c=True)
+    # Not recorded, graphed or printed.
+    assert run.confirmation() is None
+    assert writer.points == []
+    assert capsys.readouterr().out.splitlines()[-1] == (
+        "Ctrl+C abandoned the Confirmation of the Milestone at Step 10: resuming "
+        "the Run gives it its Confirmation."
+    )
+    # The Run resumes from a full checkpoint at the Step.
+    assert [saved.step for saved in run.checkpoints()] == [4, 8, 10]
+    assert torch.load(run.checkpoints()[-1].path) == {
+        "learner": {"given": 10},
+        "step": 10,
+        "resumes": 0,
+    }
 
 
 def test_a_run_saves_its_files_at_step_0_every_so_many_steps_and_its_budget() -> None:
@@ -812,6 +1079,98 @@ def test_a_resume_measures_first_the_milestone_whose_evaluation_was_abandoned(
     assert evaluation.evaluated == evaluated
     assert evaluation.given_then == evaluated
     assert list(run.evaluations()) == [0, 10, 13]
+
+
+@pytest.mark.parametrize(
+    ("means", "end", "interruption"),
+    [
+        ({0: -21, 10: 19}, 10, "ctrl_c"),
+        ({0: -21, 10: 19}, 10, "crash"),
+        ({0: -21, 10: 5, 20: 3, 23: 4}, 23, "crash"),
+    ],
+    ids=["ctrl_c-stopped-at-19", "crash-stopped-at-19", "crash-at-the-budget"],
+)
+def test_a_run_stopped_before_its_confirmation_has_it_on_resume_and_no_step(
+    means: dict[int, float], end: int, interruption: str
+) -> None:
+    # Checkpoints every 4 Steps, and Milestones every 10, and at the Budget, 23. A
+    # crash leaves the latest checkpoint before the Run's end, and Ctrl+C one at
+    # it. Either way, the Milestone of Step 10 is the best.
+    run = new_run(
+        RunSettings(
+            budget=23, checkpoint_every=4, checkpoints_kept=10, milestone_every=10
+        )
+    )
+    try:
+        train_run(
+            run,
+            ConstantRewardEnv(),
+            CountingLearner(),
+            stay_awake=Awake(),
+            writer=NoGraphs(),
+            evaluation=FixedMeans(means, **{f"{interruption}_in_confirmation": True}),
+        )
+    except KeyboardInterrupt:
+        pass
+    run = RunDirectory.open(run.path, current_commit=A_COMMIT)
+    milestones = run.milestones()
+    learner = EpsilonRecordingLearner()
+    evaluation = FixedMeans(means, confirmation=18.5)
+
+    stopped = resume_run(
+        run,
+        ConstantRewardEnv(),
+        learner,
+        stay_awake=Awake(),
+        writer=NoGraphs(),
+        evaluation=evaluation,
+    )
+
+    assert stopped == RunStop(step=end, by_ctrl_c=False)
+    # The Confirmation alone: no Step, no Milestone, and no Evaluation again.
+    assert evaluation.asked == [(10, CONFIRMATION)]
+    assert learner.epsilons == []
+    assert run.milestones() == milestones
+    confirmation = run.confirmation()
+    assert confirmation is not None
+    assert (confirmation.step, confirmation.evaluation.summary.mean) == (10, 18.5)
+
+
+def test_a_run_that_had_its_confirmation_refuses_to_resume() -> None:
+    # The Run stops at its Milestone of Step 10, before its Budget, and has its
+    # Confirmation.
+    run = new_run(
+        RunSettings(
+            budget=23, checkpoint_every=4, checkpoints_kept=10, milestone_every=10
+        )
+    )
+    train_run(
+        run,
+        ConstantRewardEnv(),
+        CountingLearner(),
+        stay_awake=Awake(),
+        writer=NoGraphs(),
+        evaluation=FixedMeans({0: -21, 10: 19}, confirmation=17.0),
+    )
+    run = RunDirectory.open(run.path, current_commit=A_COMMIT)
+    files = sorted(run.path.iterdir())
+    awake = Awake()
+    evaluation = FixedMeans({0: -21, 10: 19, 20: 21, 23: 21})
+
+    with pytest.raises(ConfirmedRunError, match="Step 10"):
+        resume_run(
+            run,
+            ConstantRewardEnv(),
+            CountingLearner(),
+            stay_awake=awake,
+            writer=NoGraphs(),
+            evaluation=evaluation,
+        )
+
+    # Nothing is played, and nothing written.
+    assert evaluation.asked == []
+    assert awake.requests == 0
+    assert sorted(run.path.iterdir()) == files
 
 
 class CrashingLearner(CountingLearner):

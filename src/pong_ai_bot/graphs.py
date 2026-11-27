@@ -16,6 +16,8 @@ written, are the spec's (#17):
 - `eval/mean`, `eval/min` and `eval/cut_off`, the mean and lowest Score margin of
   a Milestone's Evaluation and how many of its Games were cut off, at the
   Milestone's Step.
+- `confirmation/mean`, the mean Score margin of the Run's Confirmation, one point
+  at the end of the Run, at the Step of the Milestone confirmed.
 
 Each is a scalar: no hparams, whose board is broken on Windows, and no histograms,
 gradients or images, until something breaks (#10). They are written through
@@ -133,6 +135,11 @@ class TrainingGraphs:
         self._writer.add_scalar("eval/min", summary.min, step)
         self._writer.add_scalar("eval/cut_off", summary.cut_off, step)
         self._timed_from += seconds
+
+    def milestone_confirmed(self, step: int, summary: Summary) -> None:
+        """The Milestone at the Run's Step `step` had the Run's Confirmation, with
+        `summary`: write its one point, at its Step."""
+        self._writer.add_scalar("confirmation/mean", summary.mean, step)
 
     def _game_ended(self, step: int) -> None:
         # A Game's Rewards add up to its Score margin: +1 for each Point won,

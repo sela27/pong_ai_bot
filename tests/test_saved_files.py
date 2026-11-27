@@ -276,6 +276,25 @@ def test_a_recorded_confirmation_is_read_back_after_the_run_is_reopened(
     )
 
 
+def test_the_confirmation_is_a_line_of_the_evaluations_file_with_its_own_set(
+    run: RunDirectory,
+) -> None:
+    regular = regular_evaluation(3, 5)
+    run.record_evaluation(regular, step=1_500_000)
+
+    run.record_confirmation(A_CONFIRMATION, step=1_500_000)
+
+    lines = (run.path / "evaluations.jsonl").read_text(encoding="utf-8").splitlines()
+    records = [json.loads(line) for line in lines]
+    assert [(record["step"], record["set"]) for record in records] == [
+        (1_500_000, "regular"),
+        (1_500_000, "confirmation"),
+    ]
+    assert [game["seed"] for game in records[1]["games"]] == [1_000_100, 1_000_101]
+    # The Milestones' Evaluations are the regular set's alone.
+    assert run.evaluations() == {1_500_000: regular}
+
+
 def test_a_second_confirmation_is_refused_and_the_first_one_is_kept(
     run: RunDirectory,
 ) -> None:

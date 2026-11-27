@@ -40,11 +40,9 @@ SETTINGS_FILE = "settings.json"
 """The Run's settings file, in its directory."""
 
 EVALUATIONS_FILE = "evaluations.jsonl"
-"""The Evaluations of the Run's Milestones on the regular set, a line of JSON for
-each, in its directory (#17)."""
-
-CONFIRMATION_FILE = "confirmation.json"
-"""The record of the Run's Confirmation, in its directory, once it has had one."""
+"""The Evaluations of the Run's Milestones on the regular set, and its
+Confirmation once it has had one, a line of JSON for each, with its set, in its
+directory (#17)."""
 
 Q_GRAPH_INPUTS_FILE = "q_graph_inputs.npz"
 """The fixed inputs of the Run's Q graph, in its directory."""
@@ -370,30 +368,24 @@ class RunDirectory:
         The line is on disk before it returns, so a Milestone recorded as
         measured stays so after a crash.
         """
-        line = evaluation.json_line(seed_set=SeedSet.REGULAR, step=step)
-        with (self.path / EVALUATIONS_FILE).open("a", encoding="utf-8") as file:
-            file.write(line + "\n")
-            file.flush()
-            os.fsync(file.fileno())
+        self._add_evaluation_line(
+            evaluation.json_line(seed_set=SeedSet.REGULAR, step=step)
+        )
 
     def evaluations(self) -> dict[int, Evaluation]:
         """The Evaluations on the regular set the Run recorded, by the Step of the
         Milestone each is of: none for a Milestone not measured yet."""
-        path = self.path / EVALUATIONS_FILE
-        if not path.exists():
-            return {}
-        records = [
-            json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
-        ]
         return {
             record["step"]: _evaluation_of(record)
-            for record in records
+            for record in self._evaluation_records()
             if record["set"] == SeedSet.REGULAR
         }
 
     def record_confirmation(self, evaluation: Evaluation, *, step: int) -> None:
         """Record the Run's Confirmation: `evaluation`, on the Confirmation's set,
-        of the Milestone at `step`.
+        of the Milestone at `step`. Its line, as `Evaluation.json_line` gives it,
+        goes to the end of the Run's evaluations.jsonl, as a Milestone's
+        Evaluation does, and is on disk before it returns.
 
         A Run has one Confirmation, so its set never becomes a set to choose by: if
         it has had one, it fails with a SecondConfirmationError, and the first one
@@ -405,19 +397,34 @@ class RunDirectory:
                 f"The Run has had its Confirmation already, of the Milestone at "
                 f"Step {recorded.step:,}; a Run has only one."
             )
-        line = evaluation.json_line(seed_set=SeedSet.CONFIRMATION, step=step)
-        _write_new(
-            self.path / CONFIRMATION_FILE,
-            lambda file: file.write(line.encode("utf-8") + b"\n"),
+        self._add_evaluation_line(
+            evaluation.json_line(seed_set=SeedSet.CONFIRMATION, step=step)
         )
 
     def confirmation(self) -> Confirmation | None:
         """The Run's Confirmation, as recorded, or None if it has had none."""
-        path = self.path / CONFIRMATION_FILE
+        for record in self._evaluation_records():
+            if record["set"] == SeedSet.CONFIRMATION:
+                return Confirmation(
+                    step=record["step"], evaluation=_evaluation_of(record)
+                )
+        return None
+
+    def _add_evaluation_line(self, line: str) -> None:
+        """Add `line` to the end of evaluations.jsonl, on disk before it returns."""
+        with (self.path / EVALUATIONS_FILE).open("a", encoding="utf-8") as file:
+            file.write(line + "\n")
+            file.flush()
+            os.fsync(file.fileno())
+
+    def _evaluation_records(self) -> list[dict[str, Any]]:
+        """Each line of evaluations.jsonl, read back, in order."""
+        path = self.path / EVALUATIONS_FILE
         if not path.exists():
-            return None
-        record = json.loads(path.read_text(encoding="utf-8"))
-        return Confirmation(step=record["step"], evaluation=_evaluation_of(record))
+            return []
+        return [
+            json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+        ]
 
     def _save(
         self, kind: Kind, step: int, write: Callable[[BinaryIO], object]
