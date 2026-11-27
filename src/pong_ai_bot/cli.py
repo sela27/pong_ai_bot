@@ -152,12 +152,7 @@ def main(
     train_command.add_argument(
         "--seed", required=True, type=int, help="the Run's seed, below 1,000,000"
     )
-    train_command.add_argument(
-        "--device",
-        choices=["cuda", "cpu"],
-        default="cuda",
-        help="where to train: the graphics card, the default, or the CPU",
-    )
+    _add_device_option(train_command)
     _add_run_settings(train_command)
     resume_command = commands.add_parser(
         "resume",
@@ -174,38 +169,53 @@ def main(
     resume_command.add_argument(
         "run", type=Path, metavar="RUN_DIRECTORY", help="the Run's directory"
     )
-    resume_command.add_argument(
+    _add_device_option(resume_command)
+    args = parser.parse_args(argv)
+
+    try:
+        if args.command == "play":
+            # Only the window needs pygame, so only the window's commands import
+            # it.
+            from pong_ai_bot.window import play_against_the_opponent
+
+            play_against_the_opponent(seed=secrets.randbits(32))
+        elif args.command == "measure-env":
+            return _measure_env()
+        elif args.command == "evaluate":
+            return _evaluate(args, learning_players=learning_players, pong=pong)
+        elif args.command == "choose-width":
+            return _choose_width(pong=pong)
+        elif args.command == "train":
+            return _train(
+                args,
+                learning_players=learning_players,
+                make_milestone_evaluation=make_milestone_evaluation,
+            )
+        elif args.command == "resume":
+            return _resume(
+                args,
+                learning_players=learning_players,
+                make_milestone_evaluation=make_milestone_evaluation,
+            )
+    except _Refused as refusal:
+        print(refusal, file=sys.stderr)
+        return 1
+    return 0
+
+
+class _Refused(Exception):
+    """A command that refuses to do what it was asked, with the reason: `pong`
+    prints it and exits with 1, having changed nothing."""
+
+
+def _add_device_option(command: argparse.ArgumentParser) -> None:
+    """The option of where `command`, a command that trains, trains."""
+    command.add_argument(
         "--device",
         choices=["cuda", "cpu"],
         default="cuda",
         help="where to train: the graphics card, the default, or the CPU",
     )
-    args = parser.parse_args(argv)
-
-    if args.command == "play":
-        # Only the window needs pygame, so only the window's commands import it.
-        from pong_ai_bot.window import play_against_the_opponent
-
-        play_against_the_opponent(seed=secrets.randbits(32))
-    elif args.command == "measure-env":
-        return _measure_env()
-    elif args.command == "evaluate":
-        return _evaluate(args, learning_players=learning_players, pong=pong)
-    elif args.command == "choose-width":
-        return _choose_width(pong=pong)
-    elif args.command == "train":
-        return _train(
-            args,
-            learning_players=learning_players,
-            make_milestone_evaluation=make_milestone_evaluation,
-        )
-    elif args.command == "resume":
-        return _resume(
-            args,
-            learning_players=learning_players,
-            make_milestone_evaluation=make_milestone_evaluation,
-        )
-    return 0
 
 
 def _measure_env() -> int:
@@ -241,13 +251,9 @@ def _evaluate(
     if args.scripted is not None:
         evaluation, step = evaluate_scripted_player(args.scripted, pong=pong), None
     else:
-        found = _milestone_to_evaluate(
+        run, milestone = _milestone_to_evaluate(
             args.milestone, output=args.output, learning_players=learning_players
         )
-        if isinstance(found, str):
-            print(found, file=sys.stderr)
-            return 1
-        run, milestone = found
         evaluation = evaluate_milestone(run, milestone, players=learning_players)
         step = milestone.step
     print(evaluation.summary_line(seed_set=SeedSet.REGULAR, step=step))
@@ -263,23 +269,23 @@ def _milestone_to_evaluate(
     *,
     output: Path | None,
     learning_players: Mapping[str, LearningPlayer],
-) -> tuple[RunDirectory, SavedFile] | str:
+) -> tuple[RunDirectory, SavedFile]:
     """The Milestone at `path` and its Run, for `pong evaluate` to evaluate, adding
-    its line to `output` if given; or the reason it can't."""
-    not_a_milestone = (
+    its line to `output` if given. If it can't, it is _Refused."""
+    not_a_milestone = _Refused(
         f"{path} is not a Milestone of a Run: a Run's directory keeps its "
         "Milestones, named by their Steps, such as milestone_000500000.pt."
     )
     if not (path.parent / SETTINGS_FILE).is_file():
-        return not_a_milestone
+        raise not_a_milestone
     run = _open_run(path.parent)
     milestone = next(
         (saved for saved in run.milestones() if saved.path.name == path.name), None
     )
     if milestone is None:
-        return not_a_milestone
+        raise not_a_milestone
     if not learning_players[run.player].evaluated:
-        return (
+        raise _Refused(
             f"The Run's player, {run.player}, has no Evaluation: a test "
             "environment's Games have no score to count them by."
         )
@@ -287,7 +293,7 @@ def _milestone_to_evaluate(
         output is not None
         and output.resolve() == (run.path / EVALUATIONS_FILE).resolve()
     ):
-        return (
+        raise _Refused(
             f"Only the Run itself adds to its {EVALUATIONS_FILE}, so that an "
             "Evaluation after it never changes the Milestone it chooses. Give "
             "--output another file."
@@ -356,20 +362,18 @@ _STOPPED_BY_CTRL_C = 130
 stopped by Ctrl+C: 128 and SIGINT's number, 2."""
 
 
-def _training_device(name: str) -> torch.device | None:
+def _training_device(name: str) -> torch.device:
     """The device `pong train` or `pong resume` trains on, by its `--device`
-    `name`, printed; or None, with the reason printed, if it refuses the CPU
-    because PyTorch sees no graphics card (issue #11)."""
+    `name`, printed. It refuses the CPU when PyTorch sees no graphics card,
+    unless `name` asks for it (issue #11)."""
     import torch
 
     if name == "cuda" and not torch.cuda.is_available():
-        print(
+        raise _Refused(
             "PyTorch sees no graphics card, and on the CPU a Run trains about 20 "
             "times slower. Check that PyTorch is the cu126 build (README), or pass "
-            "--device cpu to train on the CPU on purpose.",
-            file=sys.stderr,
+            "--device cpu to train on the CPU on purpose."
         )
-        return None
     device = torch.device(name)
     if device.type == "cuda":
         print(f"Device: cuda ({torch.cuda.get_device_name(device)})")
@@ -385,9 +389,6 @@ def _train(
     make_milestone_evaluation: MilestoneEvaluationMaker,
 ) -> int:
     device = _training_device(args.device)
-    if device is None:
-        return 1
-
     settings = RunSettings(
         **{
             field.name: getattr(args, field.name)
@@ -415,19 +416,15 @@ def _resume(
     make_milestone_evaluation: MilestoneEvaluationMaker,
 ) -> int:
     device = _training_device(args.device)
-    if device is None:
-        return 1
     run = _open_run(args.run)
     # So that the Confirmation's set never becomes a set to choose by (issues #13,
     # #14).
     confirmation = run.confirmation()
     if confirmation is not None:
-        print(
+        raise _Refused(
             "The Run had its Confirmation, of the Milestone at Step "
-            f"{confirmation.step:,}: a Run never goes on after it.",
-            file=sys.stderr,
+            f"{confirmation.step:,}: a Run never goes on after it."
         )
-        return 1
     budget = run.settings.budget
     # The Run's end saves a Milestone at its Budget, which may come after its
     # latest checkpoint. A Run with Evaluations then evaluates it, and confirms
@@ -441,13 +438,11 @@ def _resume(
         )
         return 0
     if not run.checkpoints():
-        print(
+        raise _Refused(
             "The Run has no full checkpoint to resume from: it saves its first at "
             f"Step {run.settings.checkpoint_every:,}, or when Ctrl+C stops it. "
-            "Start a new Run instead.",
-            file=sys.stderr,
+            "Start a new Run instead."
         )
-        return 1
     return _train_or_resume(
         run,
         device,

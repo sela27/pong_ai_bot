@@ -31,7 +31,7 @@ import numpy.typing as npt
 
 from pong_ai_bot.evaluation import Evaluation, GameResult, SeedSet
 from pong_ai_bot.opponent import DEFAULT_OFFSET_WIDTH
-from pong_ai_bot.run_settings import Loss, RunSettings
+from pong_ai_bot.run_settings import RunSettings
 
 RUNS_DIR_VARIABLE = "PONG_AI_BOT_RUNS_DIR"
 """The environment variable that names the Runs' directory, if set (#17)."""
@@ -258,7 +258,7 @@ class RunDirectory:
             player=record["player"],
             name=record["name"],
             seed=record["seed"],
-            settings=RunSettings(**{**recorded, "loss": Loss(recorded["loss"])}),
+            settings=RunSettings.of_record(recorded),
             opponent_offset_width=record["opponent_offset_width"],
             commit=Commit(
                 sha=record["commit"], uncommitted_changes=record["uncommitted_changes"]

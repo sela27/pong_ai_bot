@@ -18,7 +18,7 @@ from pong_ai_bot.run_directory import (
     checked_out_commit,
     runs_root,
 )
-from pong_ai_bot.run_settings import RunSettings
+from pong_ai_bot.run_settings import Loss, RunSettings
 
 AT_14_30 = datetime(2026, 11, 27, 14, 30, 5)
 
@@ -77,6 +77,8 @@ def test_reopening_a_run_reads_back_everything_its_settings_file_recorded(
     assert run.path == created.path
     assert (run.player, run.name, run.seed) == ("position-learner", "tiny", 999_999)
     assert run.settings == settings
+    # Each setting of a kind of its own as that kind, not as what JSON keeps.
+    assert run.settings.loss is Loss.MSE
     # The locked width, 100% of half the Paddle's height (#31).
     assert run.opponent_offset_width == 1.0
     assert run.commit == at_a_changed_commit

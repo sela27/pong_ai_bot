@@ -178,8 +178,8 @@ def _greedy_player(network: nn.Module, milestone: SavedFile) -> GreedyPlayer:
     # don't need it.
     import torch
 
-    from pong_ai_bot.learner import GreedyPlayer
+    from pong_ai_bot.learner import GreedyPlayer, device_of
 
-    device = next(network.parameters()).device
-    network.load_state_dict(torch.load(milestone.path, map_location=device))
+    map_location = device_of(network)
+    network.load_state_dict(torch.load(milestone.path, map_location=map_location))
     return GreedyPlayer(network)

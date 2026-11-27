@@ -184,7 +184,7 @@ class Learner:
             double_dqn=self._settings.double_dqn,
         )
         actions = torch.tensor(
-            [transition.action for transition in batch], device=_device(self._network)
+            [transition.action for transition in batch], device=device_of(self._network)
         )
         q = self._network(
             _inputs([transition.observation for transition in batch], self._network)
@@ -221,7 +221,7 @@ def targets(
     one of its highest Q, and `target_network` gives that Action's Q. Without it,
     the target network's highest Q.
     """
-    device = _device(network)
+    device = device_of(network)
     rewards = torch.tensor(
         [transition.reward for transition in batch], dtype=torch.float32, device=device
     )
@@ -282,10 +282,11 @@ def _inputs(observations: npt.ArrayLike, network: nn.Module) -> torch.Tensor:
     """`network`'s input from a batch of Observations: a list of them, or an array
     with one along each place of its first axis."""
     return torch.as_tensor(
-        np.asarray(observations), dtype=torch.float32, device=_device(network)
+        np.asarray(observations), dtype=torch.float32, device=device_of(network)
     )
 
 
-def _device(network: nn.Module) -> torch.device:
-    """Where `network` is, the CPU or the graphics card: where its inputs go."""
+def device_of(network: nn.Module) -> torch.device:
+    """Where `network` is, the CPU or the graphics card: where its inputs go, and
+    the weights loaded into it."""
     return next(network.parameters()).device

@@ -7,8 +7,9 @@ A Run's settings are written to its settings file when it is created and never
 change after: other settings are another Run.
 """
 
-from dataclasses import dataclass
-from enum import StrEnum
+from dataclasses import dataclass, fields
+from enum import Enum, StrEnum
+from typing import Any
 
 
 class Loss(StrEnum):
@@ -69,3 +70,15 @@ class RunSettings:
     confirmation_gate: float = 18.0
     """The Run reaches its goal only if its Confirmation's mean Score margin is at
     least this."""
+
+    @classmethod
+    def of_record(cls, record: dict[str, Any]) -> RunSettings:
+        """The settings `record` holds, as a settings file keeps them, by name:
+        each Enum setting, kept as its value, is its Enum again, by its type."""
+        settings: dict[str, Any] = {}
+        for field in fields(cls):
+            kind, value = field.type, record[field.name]
+            if isinstance(kind, type) and issubclass(kind, Enum):
+                value = kind(value)
+            settings[field.name] = value
+        return cls(**settings)
