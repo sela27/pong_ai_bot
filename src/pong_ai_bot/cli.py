@@ -31,6 +31,13 @@ from pong_ai_bot.scripted_players import (
     PongMaker,
     evaluate_scripted_player,
 )
+from pong_ai_bot.training import (
+    ConfirmedRunError,
+    RunOverError,
+    check_not_over,
+    resume_run,
+    train_run,
+)
 from pong_ai_bot.width_choice import choose_width
 
 if TYPE_CHECKING:
@@ -412,25 +419,14 @@ def _resume(
 ) -> int:
     device = _training_device(args.device)
     run = _open_run(args.run)
-    # So that the Confirmation's set never becomes a set to choose by (issues #13,
-    # #14).
-    confirmation = run.confirmation()
-    if confirmation is not None:
-        raise _Refused(
-            "The Run had its Confirmation, of the Milestone at Step "
-            f"{confirmation.step:,}: a Run never goes on after it."
-        )
-    budget = run.settings.budget
-    # The Run's end saves a Milestone at its Budget, which may come after its
-    # latest checkpoint. A Run with Evaluations then evaluates it, and confirms
-    # its best Milestone: until it has its Confirmation, its resume gives it.
     player = learning_players[run.player]
-    evaluated = player.evaluated
-    if not evaluated and run.milestone(budget) is not None:
-        print(
-            f"The Run reached its Budget, {budget:,} Steps, already: there is "
-            "nothing to resume."
-        )
+    try:
+        check_not_over(run, evaluated=player.evaluated)
+    except ConfirmedRunError as error:
+        raise _Refused(str(error)) from None
+    except RunOverError as error:
+        # Over as it should be: nothing went wrong.
+        print(error)
         return 0
     if not run.checkpoints():
         raise _Refused(
@@ -483,7 +479,6 @@ def _train_or_resume(
 
     from pong_ai_bot.keep_awake import keep_windows_awake
     from pong_ai_bot.learner import Learner, LearnerSettings
-    from pong_ai_bot.training import resume_run, train_run
 
     settings = run.settings
     # The network's first weights come from the Run's seed too. A resumed Run's

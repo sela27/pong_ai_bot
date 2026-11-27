@@ -266,9 +266,36 @@ def train_run(
         )
 
 
-class ConfirmedRunError(RuntimeError):
+class RunOverError(RuntimeError):
+    """A Run that is over resumed: it has nothing left to play."""
+
+
+class ConfirmedRunError(RunOverError):
     """A Run that had its Confirmation resumed: it never goes on, so that the
     Confirmation's set never becomes a set to choose by (issues #13, #14)."""
+
+
+def check_not_over(run: RunDirectory, *, evaluated: bool) -> None:
+    """Fail if the Run `run`, of Evaluations if `evaluated`, is over, so that
+    resuming it would play nothing: with a ConfirmedRunError once it had its
+    Confirmation, and with a RunOverError once it has none and reached its Budget.
+
+    A Run with Evaluations isn't over before its Confirmation, even once its
+    training is: resuming it gives it.
+    """
+    confirmation = run.confirmation()
+    if confirmation is not None:
+        raise ConfirmedRunError(
+            "The Run had its Confirmation, of the Milestone at Step "
+            f"{confirmation.step:,}: a Run never goes on after it."
+        )
+    # The Run's end saves its last file, the Milestone of its Budget.
+    budget = run.settings.budget
+    if not evaluated and run.milestone(budget) is not None:
+        raise RunOverError(
+            f"The Run reached its Budget, {budget:,} Steps, already: there is "
+            "nothing to resume."
+        )
 
 
 def resume_run(
@@ -298,19 +325,14 @@ def resume_run(
     its training was over, and before its Confirmation, such as by Ctrl+C in it,
     plays no Step more: it only has its Confirmation.
 
-    A Run that had its Confirmation never goes on: it fails with a
-    ConfirmedRunError, with nothing played.
+    A Run that is over fails as `check_not_over` says, with nothing played: a
+    Run that had its Confirmation never goes on.
     """
     # Only here: PyTorch takes seconds to import, and the ε schedule doesn't need
     # it.
     import torch
 
-    confirmation = run.confirmation()
-    if confirmation is not None:
-        raise ConfirmedRunError(
-            "The Run had its Confirmation, of the Milestone at Step "
-            f"{confirmation.step:,}: a Run never goes on after it."
-        )
+    check_not_over(run, evaluated=evaluation is not None)
     with stay_awake(), catch_ctrl_c() as ctrl_c:
         checkpoint = torch.load(run.checkpoints()[-1].path)
         learner.load_state_dict(checkpoint["learner"])
@@ -481,10 +503,9 @@ def _play_run(
     for milestone in run.milestones():
         if milestone.step not in measured:
             measure(milestone)
-    # A Milestone at the Budget is saved only at the Run's end, so with one the
-    # Run trains no more, as when a crash stopped it before its Confirmation. The
-    # same goes once its training stopped at a Milestone of at least stop_mean.
-    trained = run.milestone(settings.budget) is not None
+    # A resume from a full checkpoint at the Budget plays no Step, as when a crash
+    # stopped the Run before its Confirmation. The same goes once its training
+    # stopped at a Milestone of at least stop_mean: its checkpoint is there.
     graphs.begin(start, resumes=resumes)
     stopped_at = train(
         env,
@@ -494,7 +515,7 @@ def _play_run(
         seed=seed,
         start=start,
         after_step=after_step,
-        stop=lambda: ctrl_c.pressed or trained or stop_at is not None,
+        stop=lambda: ctrl_c.pressed or stop_at is not None,
         graphs=graphs,
     )
     # Over at its first Milestone of at least stop_mean, or at its Budget with
@@ -503,7 +524,7 @@ def _play_run(
     # included, and it resumes from a full checkpoint at the Step, unless it has
     # one there already, as one of every so many.
     over = stop_at is not None or (
-        (trained or stopped_at == settings.budget)
+        stopped_at == settings.budget
         and (evaluation is None or settings.budget in run.evaluations())
     )
     if over and evaluation is not None:

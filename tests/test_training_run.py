@@ -36,7 +36,13 @@ from pong_ai_bot.evaluation import Evaluation, EvaluationStopped, GameResult, Se
 from pong_ai_bot.run_directory import RunDirectory, SavedFile
 from pong_ai_bot.run_settings import RunSettings
 from pong_ai_bot.test_environments import ConstantRewardEnv, TwoStepEnv
-from pong_ai_bot.training import ConfirmedRunError, RunStop, resume_run, train_run
+from pong_ai_bot.training import (
+    ConfirmedRunError,
+    RunOverError,
+    RunStop,
+    resume_run,
+    train_run,
+)
 from pong_ai_bot.transition import Transition
 
 
@@ -1150,6 +1156,32 @@ def test_a_run_that_had_its_confirmation_refuses_to_resume() -> None:
 
     # Nothing is played, and nothing written.
     assert evaluation.asked == []
+    assert awake.requests == 0
+    assert sorted(run.path.iterdir()) == files
+
+
+def test_a_run_of_no_evaluations_that_reached_its_budget_refuses_to_resume() -> None:
+    run = new_run(RunSettings(budget=12, checkpoint_every=5, milestone_every=10))
+    train_run(
+        run,
+        ConstantRewardEnv(),
+        CountingLearner(),
+        stay_awake=Awake(),
+        writer=NoGraphs(),
+    )
+    files = sorted(run.path.iterdir())
+    awake = Awake()
+
+    with pytest.raises(RunOverError, match="its Budget, 12 Steps, already"):
+        resume_run(
+            run,
+            ConstantRewardEnv(),
+            CountingLearner(),
+            stay_awake=awake,
+            writer=NoGraphs(),
+        )
+
+    # Nothing is played, and nothing written.
     assert awake.requests == 0
     assert sorted(run.path.iterdir()) == files
 
