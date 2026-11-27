@@ -5,19 +5,38 @@ PyTorch that takes about 5 seconds. The fast tests that need PyTorch make networ
 only, never a learner.
 """
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pytest
 
-from pong_ai_bot.run_settings import Loss, RunSettings
+from pong_ai_bot.run_settings import RunSettings
 from pong_ai_bot.transition import Transition
 
 if TYPE_CHECKING:
-    from pong_ai_bot.learner import Learner
+    from pong_ai_bot.learner import Learner, LearnerSettings
 
 INPUT = np.array([1.0], np.float32)
 """The input of every Step: a stack of one Observation, the number 1."""
+
+
+def one_transition_a_batch(**changes: Any) -> LearnerSettings:
+    """The learner's settings in these tests, with `changes`: an update every
+    Step, from a batch of one transition, at a learning rate of 0.1, from the
+    first transition in the replay buffer, of one, on. The rest are a Run's
+    defaults: Adam's eps of 1e-8, the MSE loss, a copy to the target network
+    every 1,000 Steps, a discount of 0.99, and Double DQN's target."""
+    from pong_ai_bot.learner import LearnerSettings
+
+    settings = {
+        "batch_size": 1,
+        "learning_rate": 0.1,
+        "update_every": 1,
+        "replay_buffer_size": 1,
+        "fill_steps": 1,
+        **changes,
+    }
+    return LearnerSettings.of_run(RunSettings(**settings))
 
 
 def play(learner: Learner, steps: int) -> None:
@@ -35,24 +54,13 @@ def test_a_learner_given_another_learners_state_learns_on_as_the_other_does() ->
     import torch
     from torch import nn
 
-    from pong_ai_bot.learner import Learner, LearnerSettings
+    from pong_ai_bot.learner import Learner
 
     # Each update learns from the latest transition alone, so both learners learn
     # from the same ones, though only the first kept those before. The state
     # changes hands between two copies to the target network, so the other must
     # take on the target network, and when the next copy comes, too.
-    settings = LearnerSettings(
-        batch_size=1,
-        learning_rate=0.1,
-        adam_eps=1e-8,
-        loss=Loss.MSE,
-        update_every=1,
-        replay_buffer_size=1,
-        fill_steps=1,
-        target_copy_every=4,
-        discount=0.99,
-        double_dqn=True,
-    )
+    settings = one_transition_a_batch(target_copy_every=4)
     torch.manual_seed(1)
     network = nn.Linear(1, 2)
     learner = Learner(network, actions=2, stack_length=1, settings=settings, seed=1)
@@ -80,22 +88,11 @@ def test_the_network_is_copied_whole_to_the_target_network_every_so_many_steps()
     import torch
     from torch import nn
 
-    from pong_ai_bot.learner import Learner, LearnerSettings
+    from pong_ai_bot.learner import Learner
 
     # The network is updated every Step, so it is the target network only right
     # after a copy.
-    settings = LearnerSettings(
-        batch_size=1,
-        learning_rate=0.1,
-        adam_eps=1e-8,
-        loss=Loss.MSE,
-        update_every=1,
-        replay_buffer_size=1,
-        fill_steps=1,
-        target_copy_every=3,
-        discount=0.99,
-        double_dqn=True,
-    )
+    settings = one_transition_a_batch(target_copy_every=3)
     torch.manual_seed(1)
     learner = Learner(
         nn.Linear(1, 2), actions=2, stack_length=1, settings=settings, seed=1
@@ -131,20 +128,9 @@ def test_an_update_moves_the_weight_by_the_mse_loss_and_adam_s_eps(
     import torch
     from torch import nn
 
-    from pong_ai_bot.learner import Learner, LearnerSettings
+    from pong_ai_bot.learner import Learner
 
-    settings = LearnerSettings(
-        batch_size=1,
-        learning_rate=0.1,
-        adam_eps=adam_eps,
-        loss=Loss.MSE,
-        update_every=1,
-        replay_buffer_size=1,
-        fill_steps=1,
-        target_copy_every=1_000,
-        discount=0.99,
-        double_dqn=True,
-    )
+    settings = one_transition_a_batch(adam_eps=adam_eps)
     # One Action, whose Q is the weight times the input.
     network = nn.Linear(1, 1, bias=False)
     with torch.no_grad():
@@ -165,20 +151,9 @@ def test_learning_gives_the_loss_of_the_update_made_and_none_before_the_first() 
     import torch
     from torch import nn
 
-    from pong_ai_bot.learner import Learner, LearnerSettings
+    from pong_ai_bot.learner import Learner
 
-    settings = LearnerSettings(
-        batch_size=1,
-        learning_rate=0.1,
-        adam_eps=1e-8,
-        loss=Loss.MSE,
-        update_every=1,
-        replay_buffer_size=2,
-        fill_steps=2,
-        target_copy_every=1_000,
-        discount=0.99,
-        double_dqn=True,
-    )
+    settings = one_transition_a_batch(replay_buffer_size=2, fill_steps=2)
     # One Action, whose Q is the weight times the input.
     network = nn.Linear(1, 1, bias=False)
     with torch.no_grad():

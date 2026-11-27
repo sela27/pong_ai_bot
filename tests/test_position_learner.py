@@ -84,13 +84,12 @@ def test_the_replay_buffer_gives_its_positions_back_as_the_same_numbers() -> Non
 
 @pytest.mark.slow
 def test_pong_train_runs_it_with_the_real_evaluation_of_each_milestone(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    runs: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # Slow for the learner's optimizer, which takes about 5 seconds to make, and
     # for the Evaluations' 100 Games of Pong, at Step 0 and at the Budget. The
     # Run's Confirmation is a fake that plays no Game, so that no test ever plays
     # the Confirmation's set (issue #16).
-    monkeypatch.setenv("PONG_AI_BOT_RUNS_DIR", str(tmp_path / "runs"))
 
     def confirmation_faked(network: Any, make_env: Any) -> Any:
         evaluate_milestone = milestone_evaluation(network, make_env)
@@ -130,7 +129,7 @@ def test_pong_train_runs_it_with_the_real_evaluation_of_each_milestone(
     )
 
     assert exit_code == 0
-    [path] = (tmp_path / "runs").iterdir()
+    [path] = runs.iterdir()
     run = RunDirectory.open(path)
     assert run.player == "position-learner"
     # The Q graph's inputs are the stacks the player decides from.

@@ -30,26 +30,14 @@ import numpy.typing as npt
 import pytest
 import torch
 from gymnasium import spaces
+from helpers import A_COMMIT, press_ctrl_c
 
 from pong_ai_bot.evaluation import Evaluation, EvaluationStopped, GameResult, SeedSet
-from pong_ai_bot.run_directory import Commit, RunDirectory, SavedFile
+from pong_ai_bot.run_directory import RunDirectory, SavedFile
 from pong_ai_bot.run_settings import RunSettings
 from pong_ai_bot.test_environments import ConstantRewardEnv, TwoStepEnv
 from pong_ai_bot.training import ConfirmedRunError, RunStop, resume_run, train_run
 from pong_ai_bot.transition import Transition
-
-A_COMMIT = Commit(
-    sha="0123456789abcdef0123456789abcdef01234567", uncommitted_changes=False
-)
-"""The commit the tests' Runs are created at, rather than asking git for it."""
-
-
-@pytest.fixture(autouse=True)
-def runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """The Runs' directory for one test, a temporary one."""
-    root = tmp_path / "runs"
-    monkeypatch.setenv("PONG_AI_BOT_RUNS_DIR", str(root))
-    return root
 
 
 def new_run(settings: RunSettings) -> RunDirectory:
@@ -112,13 +100,6 @@ class CountingLearner:
 
     def network_state_dict(self) -> dict[str, Any]:
         return {"weights after": self.given}
-
-
-def press_ctrl_c() -> None:
-    """Press Ctrl+C, as Python sees it: it calls the handler of SIGINT."""
-    handler = signal.getsignal(signal.SIGINT)
-    assert callable(handler)
-    handler(signal.SIGINT, None)
 
 
 class CtrlCLearner(CountingLearner):

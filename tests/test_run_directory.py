@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+from helpers import A_COMMIT
 
 import pong_ai_bot
 from pong_ai_bot.run_directory import (
@@ -19,20 +20,7 @@ from pong_ai_bot.run_directory import (
 )
 from pong_ai_bot.run_settings import RunSettings
 
-A_COMMIT = Commit(
-    sha="0123456789abcdef0123456789abcdef01234567", uncommitted_changes=False
-)
-"""The commit the tests' Runs are created at, rather than asking git for it."""
-
 AT_14_30 = datetime(2026, 11, 27, 14, 30, 5)
-
-
-@pytest.fixture
-def runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """The Runs' directory for one test, a temporary one."""
-    root = tmp_path / "runs"
-    monkeypatch.setenv("PONG_AI_BOT_RUNS_DIR", str(root))
-    return root
 
 
 def test_the_runs_are_kept_in_the_directory_the_environment_variable_names(

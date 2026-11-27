@@ -1,22 +1,32 @@
 """Fixtures for every test."""
 
+import itertools
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from pong_ai_bot.run_directory import RUNS_DIR_VARIABLE
 
-@pytest.fixture(autouse=True, scope="session")
-def _runs_in_a_temporary_directory(
-    tmp_path_factory: pytest.TempPathFactory,
-) -> Iterator[Path]:
-    """No test ever writes to the real Runs' directory, ~/pong_ai_bot_runs: every
-    Run a test creates goes to a temporary one, unless the test sets its own."""
-    runs = tmp_path_factory.mktemp("runs")
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setenv("PONG_AI_BOT_RUNS_DIR", str(runs))
-        yield runs
+_test_numbers = itertools.count()
+"""A number for each test, to name its Runs' directory by."""
+
+
+@pytest.fixture(scope="session")
+def _temporary_runs_directories(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The temporary directory every test's Runs' directory is in."""
+    return tmp_path_factory.mktemp("runs")
+
+
+@pytest.fixture(autouse=True)
+def runs(_temporary_runs_directories: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The test's own Runs' directory, a temporary one, so no test ever writes to
+    the real one, ~/pong_ai_bot_runs. It is empty when the test starts: it doesn't
+    exist until the test creates its first Run."""
+    path = _temporary_runs_directories / f"test{next(_test_numbers)}"
+    monkeypatch.setenv(RUNS_DIR_VARIABLE, str(path))
+    return path
 
 
 @pytest.fixture(autouse=True, scope="session")

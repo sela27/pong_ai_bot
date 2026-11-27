@@ -16,7 +16,6 @@ import numpy as np
 import pytest
 from gymnasium.utils.env_checker import check_env
 
-from pong_ai_bot.run_settings import Loss
 from pong_ai_bot.test_environments import (
     ConstantRewardEnv,
     RewardByActionEnv,
@@ -50,20 +49,20 @@ def trained(env: gym.Env[Any, Any], *, actions: int) -> tuple[Learner, nn.Module
     from torch import nn
 
     from pong_ai_bot.learner import Learner, LearnerSettings
+    from pong_ai_bot.run_settings import RunSettings
 
     torch.manual_seed(SEED)
     network = nn.Sequential(nn.Linear(1, 16), nn.ReLU(), nn.Linear(16, actions))
-    settings = LearnerSettings(
-        batch_size=8,
-        learning_rate=1e-3,
-        adam_eps=1e-8,
-        loss=Loss.MSE,
-        update_every=1,
-        replay_buffer_size=100,
-        fill_steps=8,
-        target_copy_every=10,
-        discount=0.99,
-        double_dqn=True,
+    settings = LearnerSettings.of_run(
+        RunSettings(
+            batch_size=8,
+            learning_rate=1e-3,
+            update_every=1,
+            replay_buffer_size=100,
+            fill_steps=8,
+            target_copy_every=10,
+            discount=0.99,
+        )
     )
     # A test environment's input, one number, is a stack of one Observation.
     learner = Learner(
