@@ -9,18 +9,25 @@ a part of PyTorch that takes about 5 seconds.
 
 import warnings
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import gymnasium as gym
+import numpy as np
 import pytest
 from gymnasium.utils.env_checker import check_env
 
 from pong_ai_bot.test_environments import (
     ConstantRewardEnv,
+    RewardByActionEnv,
     RewardIsInputEnv,
     TwoStepEnv,
 )
 from pong_ai_bot.training import EpsilonSchedule, train
+
+if TYPE_CHECKING:
+    from torch import nn
+
+    from pong_ai_bot.learner import Learner
 
 SEED = 0
 """The seed of the network's first weights, of the learner and of the
@@ -35,16 +42,16 @@ discount is what is checked: TOLERANCE would let 1, the value without the discou
 of 0.99, pass for 0.99."""
 
 
-def learned_values(env: gym.Env[Any, Any], inputs: list[float]) -> list[float]:
-    """The values a tiny network learns on `env`, through the real loop, for each
-    of `inputs`: the Q of its only Action."""
+def trained(env: gym.Env[Any, Any], *, actions: int) -> tuple[Learner, nn.Module]:
+    """A tiny network of `actions` Actions, trained on `env` through the real loop,
+    with its learner."""
     import torch
     from torch import nn
 
     from pong_ai_bot.learner import Learner, LearnerSettings
 
     torch.manual_seed(SEED)
-    network = nn.Sequential(nn.Linear(1, 16), nn.ReLU(), nn.Linear(16, 1))
+    network = nn.Sequential(nn.Linear(1, 16), nn.ReLU(), nn.Linear(16, actions))
     settings = LearnerSettings(
         batch_size=8,
         learning_rate=1e-3,
@@ -55,17 +62,33 @@ def learned_values(env: gym.Env[Any, Any], inputs: list[float]) -> list[float]:
         discount=0.99,
         double_dqn=True,
     )
-    learner = Learner(network, actions=1, settings=settings, seed=SEED)
+    learner = Learner(network, actions=actions, settings=settings, seed=SEED)
     epsilon = EpsilonSchedule(start=1.0, end=0.01, decay_steps=100)
 
     train(env, learner, steps=1_000, epsilon=epsilon, seed=SEED)
 
+    return learner, network
+
+
+def q_values(network: nn.Module, inputs: list[float]) -> list[list[float]]:
+    """`network`'s Q of each Action, for each of `inputs`."""
+    import torch
+
     with torch.no_grad():
         values = network(torch.tensor([[value] for value in inputs]))
-    return [float(value) for value in values[:, 0]]
+    return values.tolist()
 
 
-@pytest.mark.parametrize("make_env", [ConstantRewardEnv, RewardIsInputEnv, TwoStepEnv])
+def learned_values(env: gym.Env[Any, Any], inputs: list[float]) -> list[float]:
+    """The values a tiny network learns on `env`, through the real loop, for each
+    of `inputs`: the Q of its only Action."""
+    _, network = trained(env, actions=1)
+    return [value for [value] in q_values(network, inputs)]
+
+
+@pytest.mark.parametrize(
+    "make_env", [ConstantRewardEnv, RewardIsInputEnv, TwoStepEnv, RewardByActionEnv]
+)
 def test_a_test_environment_passes_gymnasiums_check_env_with_no_warnings(
     make_env: Callable[[], gym.Env[Any, Any]],
 ) -> None:
@@ -104,4 +127,17 @@ def test_the_value_learned_in_test_environment_3_is_the_discount_at_the_first_st
     assert values == pytest.approx([0.99, 1.0], abs=DISCOUNT_TOLERANCE), (
         f"the values learned at the first and second Steps are {values[0]:+.4f} "
         f"and {values[1]:+.4f}"
+    )
+
+
+@pytest.mark.slow
+def test_the_loop_chooses_the_action_rewarded_1_in_test_environment_4() -> None:
+    learner, network = trained(RewardByActionEnv(), actions=2)
+
+    observation = np.array([RewardByActionEnv.INPUT], np.float32)
+    action = learner.choose_action(observation, epsilon=0.0)
+
+    assert action == RewardByActionEnv.RIGHT_ACTION, (
+        f"the Action chosen is {action}, and the values learned for Actions 0 and 1"
+        f" are {q_values(network, [RewardByActionEnv.INPUT])[0]}"
     )

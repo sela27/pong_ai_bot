@@ -98,3 +98,31 @@ class TwoStepEnv(gym.Env[Input, np.int64]):
             self._at_first = False
             return _input(self.SECOND_INPUT), 0.0, False, False, {}
         return _input(self.SECOND_INPUT), 1.0, True, False, {}
+
+
+class RewardByActionEnv(gym.Env[Input, np.int64]):
+    """Test environment 4: a constant input, two Actions, a Reward of +1 for one
+    and -1 for the other, and the Game ends. The loop must choose the right one.
+
+    The right one is the second, so that a loop that always chooses the first, as
+    a tie between equal Q-values would, doesn't pass.
+    """
+
+    INPUT = 0.0
+    RIGHT_ACTION = 1
+
+    def __init__(self) -> None:
+        self.observation_space = spaces.Box(-1.0, 1.0, (1,), np.float32)
+        self.action_space = spaces.Discrete(2)
+
+    def reset(
+        self, *, seed: int | None = None, options: dict[str, Any] | None = None
+    ) -> tuple[Input, dict[str, Any]]:
+        super().reset(seed=seed)
+        return _input(self.INPUT), {}
+
+    def step(
+        self, action: int | np.integer[Any]
+    ) -> tuple[Input, SupportsFloat, bool, bool, dict[str, Any]]:
+        reward = 1.0 if action == self.RIGHT_ACTION else -1.0
+        return _input(self.INPUT), reward, True, False, {}
