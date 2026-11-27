@@ -6,7 +6,7 @@ They are the Position learner, and the test environments' tiny players, with whi
 an agent can run tiny Runs in a temporary directory. The Agent comes later.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -138,24 +138,36 @@ def milestone_evaluation(network: nn.Module, make_env: EnvMaker) -> MilestoneEva
     return evaluate_in_the_run
 
 
-def evaluate_milestone(run: RunDirectory, milestone: SavedFile) -> Evaluation:
+def evaluate_milestone(
+    run: RunDirectory,
+    milestone: SavedFile,
+    *,
+    players: Mapping[str, LearningPlayer] = LEARNING_PLAYERS,
+) -> Evaluation:
     """The Evaluation of `milestone`, one of the Run `run`'s Milestones, after the
     Run, as `pong evaluate` plays it: its greedy player, on the CPU, in the
-    environment of the Run's player, on the regular set.
+    environment of the Run's player, on the regular set. The Run's player is the
+    one of `players` its settings file names.
 
     Never on the Confirmation's set, which only the end of a Run plays, once. It
     records nothing in the Run either, so it never changes the Milestone the Run
     chooses (issue #16).
     """
-    make_env = LEARNING_PLAYERS[run.player].make_env
-    return evaluate(milestone_player(run, milestone), make_env, SeedSet.REGULAR.seeds)
+    make_env = players[run.player].make_env
+    player = milestone_player(run, milestone, players=players)
+    return evaluate(player, make_env, SeedSet.REGULAR.seeds)
 
 
-def milestone_player(run: RunDirectory, milestone: SavedFile) -> GreedyPlayer:
+def milestone_player(
+    run: RunDirectory,
+    milestone: SavedFile,
+    *,
+    players: Mapping[str, LearningPlayer] = LEARNING_PLAYERS,
+) -> GreedyPlayer:
     """The greedy player of `milestone`, one of the Run `run`'s Milestones: a new
-    network of the kind of the Run's player, as its settings file records it, on
-    the CPU, with the weights the Milestone holds."""
-    network = LEARNING_PLAYERS[run.player].make_network()
+    network of the kind of the Run's player, the one of `players` its settings
+    file names, on the CPU, with the weights the Milestone holds."""
+    network = players[run.player].make_network()
     return _greedy_player(network, milestone)
 
 

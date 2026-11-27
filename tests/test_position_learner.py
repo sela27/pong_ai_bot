@@ -9,12 +9,11 @@ import numpy as np
 import pytest
 from gymnasium import spaces
 
-from pong_ai_bot import learning_players
 from pong_ai_bot.cli import main
 from pong_ai_bot.environment import Action
 from pong_ai_bot.evaluation import Evaluation, GameResult, SeedSet
 from pong_ai_bot.game import Score
-from pong_ai_bot.learning_players import LEARNING_PLAYERS
+from pong_ai_bot.learning_players import LEARNING_PLAYERS, milestone_evaluation
 from pong_ai_bot.replay_buffer import ReplayBuffer
 from pong_ai_bot.run_directory import RunDirectory
 from pong_ai_bot.transition import Transition
@@ -92,10 +91,9 @@ def test_pong_train_runs_it_with_the_real_evaluation_of_each_milestone(
     # Run's Confirmation is a fake that plays no Game, so that no test ever plays
     # the Confirmation's set (issue #16).
     monkeypatch.setenv("PONG_AI_BOT_RUNS_DIR", str(tmp_path / "runs"))
-    real_evaluation = learning_players.milestone_evaluation
 
     def confirmation_faked(network: Any, make_env: Any) -> Any:
-        evaluate_milestone = real_evaluation(network, make_env)
+        evaluate_milestone = milestone_evaluation(network, make_env)
 
         def evaluation(milestone: Any, *, seed_set: SeedSet, stop: Any) -> Evaluation:
             if seed_set is SeedSet.CONFIRMATION:
@@ -105,8 +103,6 @@ def test_pong_train_runs_it_with_the_real_evaluation_of_each_milestone(
             return evaluate_milestone(milestone, seed_set=seed_set, stop=stop)
 
         return evaluation
-
-    monkeypatch.setattr(learning_players, "milestone_evaluation", confirmation_faked)
 
     exit_code = main(
         [
@@ -129,7 +125,8 @@ def test_pong_train_runs_it_with_the_real_evaluation_of_each_milestone(
             "20",
             "--milestone-every",
             "40",
-        ]
+        ],
+        make_milestone_evaluation=confirmation_faked,
     )
 
     assert exit_code == 0

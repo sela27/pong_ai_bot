@@ -10,6 +10,7 @@ import functools
 from collections.abc import Callable, Iterator, Sequence
 from typing import Any
 
+import gymnasium as gym
 import numpy as np
 import numpy.typing as npt
 
@@ -174,19 +175,23 @@ SCRIPTED_PLAYERS: dict[str, Callable[[], Player]] = {
 that makes a new one for an Evaluation. A new Scripted player is one more line."""
 
 
+PongMaker = Callable[..., gym.Env[Any, Any]]
+"""Makes the environment a Scripted player plays, as PongEnv does, given the player
+on the left, `left_player`."""
+
+
 def evaluate_scripted_player(
-    name: str, *, width: float = DEFAULT_OFFSET_WIDTH
+    name: str, *, width: float = DEFAULT_OFFSET_WIDTH, pong: PongMaker = PongEnv
 ) -> Evaluation:
     """The Evaluation of the Scripted player `name` against an Opponent of the
-    offset width `width`, on the regular set.
+    offset width `width`, on the regular set, in the environments `pong` makes:
+    PongEnv's, unless a test gives a fake.
 
     Never on the Confirmation's set: it is played only at the end of a Run
     (issue #16).
     """
     return evaluate(
         SCRIPTED_PLAYERS[name](),
-        functools.partial(
-            PongEnv, left_player=functools.partial(Opponent, width=width)
-        ),
+        functools.partial(pong, left_player=functools.partial(Opponent, width=width)),
         SeedSet.REGULAR.seeds,
     )

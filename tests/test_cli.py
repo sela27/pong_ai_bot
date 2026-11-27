@@ -6,7 +6,8 @@ import shutil
 import signal
 import subprocess
 import sysconfig
-from dataclasses import fields
+from collections.abc import Callable
+from dataclasses import fields, replace
 from pathlib import Path
 from typing import Any, SupportsFloat
 
@@ -19,6 +20,7 @@ from gymnasium import spaces
 from pong_ai_bot.cli import main
 from pong_ai_bot.evaluation import Evaluation, GameResult
 from pong_ai_bot.game import Score
+from pong_ai_bot.learning_players import LEARNING_PLAYERS, LearningPlayer
 from pong_ai_bot.run_directory import Commit, RunDirectory, checked_out_commit
 from pong_ai_bot.run_settings import Loss, RunSettings
 
@@ -71,17 +73,17 @@ class OneStepGames(gym.Env[npt.NDArray[np.uint8], np.int64]):
 
 
 def test_pong_evaluate_prints_the_summary_line_and_adds_the_json_line_to_a_file(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # In-process, and with Games of one Step, to keep the hook fast: the random
     # player's 100 real Games take a couple of seconds.
-    monkeypatch.setattr("pong_ai_bot.scripted_players.PongEnv", OneStepGames)
     output = tmp_path / "random.jsonl"
     output.write_text('{"earlier": "line"}\n', encoding="utf-8")
 
-    exit_code = main(["evaluate", "--scripted", "random", "--output", str(output)])
+    exit_code = main(
+        ["evaluate", "--scripted", "random", "--output", str(output)],
+        pong=OneStepGames,
+    )
 
     assert exit_code == 0
     # Half of the 100 Games won 21 to 0, and the other half lost 0 to 21.
@@ -285,30 +287,8 @@ def test_ctrl_c_stops_pong_train_after_its_step_with_a_full_checkpoint(
     # Slow for the learner's optimizer, as above.
     import torch
 
-    from pong_ai_bot.test_environments import ConstantRewardEnv
-    from pong_ai_bot.training import Q_GRAPH_INPUTS
-
     runs = tmp_path / "runs"
     monkeypatch.setenv("PONG_AI_BOT_RUNS_DIR", str(runs))
-    # Ctrl+C is pressed while the environment plays the Run's Step 12, without a
-    # real signal: Python calls the handler of SIGINT when Ctrl+C is pressed.
-    # Before Step 0, the Run plays a Game of random Actions for its Q graph's
-    # inputs, a Step for each.
-    play_step = ConstantRewardEnv.step
-    steps_played = -Q_GRAPH_INPUTS
-
-    def step_pressing_ctrl_c_in_step_12(
-        env: ConstantRewardEnv, action: int
-    ) -> tuple[Any, SupportsFloat, bool, bool, dict[str, Any]]:
-        nonlocal steps_played
-        steps_played += 1
-        if steps_played == 12:
-            handler = signal.getsignal(signal.SIGINT)
-            assert callable(handler)
-            handler(signal.SIGINT, None)
-        return play_step(env, action)
-
-    monkeypatch.setattr(ConstantRewardEnv, "step", step_pressing_ctrl_c_in_step_12)
 
     exit_code = main(
         [
@@ -331,7 +311,8 @@ def test_ctrl_c_stops_pong_train_after_its_step_with_a_full_checkpoint(
             "4",
             "--checkpoint-every",
             "5",
-        ]
+        ],
+        learning_players=pressing_ctrl_c_in_step(12, presses=1),
     )
 
     # As a program stopped by Ctrl+C: 128 and SIGINT's number, 2.
@@ -442,38 +423,58 @@ def test_pong_resume_of_a_run_that_reached_its_budget_plays_nothing_more(
     assert sorted(run.path.iterdir()) == files
 
 
-def train_stopped_by_ctrl_c(
-    monkeypatch: pytest.MonkeyPatch, settings: list[str], *, at: int, presses: int
-) -> Path:
+class CtrlCInStep(gym.Wrapper[Any, Any, Any, Any]):
+    """An environment that presses Ctrl+C, `presses` times, while it plays the
+    Run's Step `at`, as the developer would, without a real signal: Python calls
+    the handler of SIGINT when Ctrl+C is pressed.
+
+    Before Step 0, the Run plays a Game of random Actions for its Q graph's
+    inputs, a Step for each.
+    """
+
+    def __init__(self, env: gym.Env[Any, Any], *, at: int, presses: int) -> None:
+        from pong_ai_bot.training import Q_GRAPH_INPUTS
+
+        super().__init__(env)
+        self._at = at
+        self._presses = presses
+        self._steps = -Q_GRAPH_INPUTS
+
+    def step(
+        self, action: Any
+    ) -> tuple[Any, SupportsFloat, bool, bool, dict[str, Any]]:
+        self._steps += 1
+        if self._steps == self._at:
+            for _ in range(self._presses):
+                handler = signal.getsignal(signal.SIGINT)
+                assert callable(handler)
+                handler(signal.SIGINT, None)
+        return self.env.step(action)
+
+
+def pressing_ctrl_c_in_step(at: int, *, presses: int) -> dict[str, LearningPlayer]:
+    """The learning players, with test environment 1's in an environment that
+    presses Ctrl+C, `presses` times, while it plays the Run's Step `at`."""
+    player = LEARNING_PLAYERS["test-env-1"]
+
+    def make_env() -> gym.Env[Any, Any]:
+        return CtrlCInStep(player.make_env(), at=at, presses=presses)
+
+    return {**LEARNING_PLAYERS, "test-env-1": replace(player, make_env=make_env)}
+
+
+def train_stopped_by_ctrl_c(settings: list[str], *, at: int, presses: int) -> Path:
     """The directory of a new Run of test environment 1 on the CPU, with the
     options `settings`, that Ctrl+C stopped while the environment played its Step
     `at`, pressed `presses` times: once, to stop after the Step, or twice, to stop
     at once, as a crash would."""
     from pong_ai_bot.run_directory import runs_root
-    from pong_ai_bot.test_environments import ConstantRewardEnv
-    from pong_ai_bot.training import Q_GRAPH_INPUTS
 
-    # As above: before Step 0, the Run plays a Step for each of its Q graph's
-    # inputs.
-    play_step = ConstantRewardEnv.step
-    steps_played = -Q_GRAPH_INPUTS
-
-    def step_pressing_ctrl_c(
-        env: ConstantRewardEnv, action: int
-    ) -> tuple[Any, SupportsFloat, bool, bool, dict[str, Any]]:
-        nonlocal steps_played
-        steps_played += 1
-        if steps_played == at:
-            handler = signal.getsignal(signal.SIGINT)
-            assert callable(handler)
-            for _ in range(presses):
-                handler(signal.SIGINT, None)
-        return play_step(env, action)
-
-    monkeypatch.setattr(ConstantRewardEnv, "step", step_pressing_ctrl_c)
     run = ["--player", "test-env-1", "--name", "tiny", "--seed", "1"]
-    exit_code = main(["train", *run, "--device", "cpu", *settings])
-    monkeypatch.setattr(ConstantRewardEnv, "step", play_step)
+    exit_code = main(
+        ["train", *run, "--device", "cpu", *settings],
+        learning_players=pressing_ctrl_c_in_step(at, presses=presses),
+    )
 
     assert exit_code == 130
     [path] = runs_root().iterdir()
@@ -492,7 +493,6 @@ def test_pong_resume_refills_the_buffer_before_learning_on_counting_its_steps(
     monkeypatch.setenv("PONG_AI_BOT_RUNS_DIR", str(tmp_path / "runs"))
     # An update every Step, once the buffer holds 10 transitions.
     path = train_stopped_by_ctrl_c(
-        monkeypatch,
         [
             "--budget",
             "30",
@@ -554,7 +554,6 @@ def test_pong_resume_drops_the_graphs_points_written_after_the_checkpoint(
     # Stopped at once in Step 12, as by a crash: its latest checkpoint is at
     # Step 10, and the graphs have points of Step 11 too.
     path = train_stopped_by_ctrl_c(
-        monkeypatch,
         [
             "--budget",
             "20",
@@ -642,19 +641,24 @@ class FakeConfirmation:
     ctrl_c = False
 
 
+PongCommand = Callable[[list[str]], int]
+"""The `pong` command, run in-process with the command line it is given, giving
+its exit code."""
+
+
 @pytest.fixture
-def fake_pong_player(monkeypatch: pytest.MonkeyPatch) -> str:
-    """The name of a learning player of OneStepPong, whose Runs have Evaluations,
-    as the Position learner's do and the Agent's will: `--player fake-pong`.
+def pong_with_fake_pong(monkeypatch: pytest.MonkeyPatch) -> PongCommand:
+    """`pong`, with one more learning player, of OneStepPong, whose Runs have
+    Evaluations, as the Position learner's do and the Agent's will:
+    `--player fake-pong`.
 
     Its Milestones' Evaluations on the regular set are the real ones, and its
     Runs' Confirmation is FakeConfirmation.
     """
     from torch import nn
 
-    from pong_ai_bot import learning_players
     from pong_ai_bot.evaluation import EvaluationStopped, SeedSet
-    from pong_ai_bot.learning_players import LEARNING_PLAYERS, LearningPlayer
+    from pong_ai_bot.learning_players import milestone_evaluation
 
     player = LearningPlayer(
         make_env=OneStepPong,
@@ -663,13 +667,11 @@ def fake_pong_player(monkeypatch: pytest.MonkeyPatch) -> str:
         stack_length=1,
         evaluated=True,
     )
-    monkeypatch.setitem(LEARNING_PLAYERS, "fake-pong", player)
     monkeypatch.setattr(OneStepPong, "regular_resets", 0)
     monkeypatch.setattr(FakeConfirmation, "ctrl_c", False)
-    real_evaluation = learning_players.milestone_evaluation
 
     def confirmation_faked(network: Any, make_env: Any) -> Any:
-        evaluate_milestone = real_evaluation(network, make_env)
+        evaluate_milestone = milestone_evaluation(network, make_env)
 
         def evaluation(milestone: Any, *, seed_set: SeedSet, stop: Any) -> Evaluation:
             if seed_set is not SeedSet.CONFIRMATION:
@@ -687,21 +689,27 @@ def fake_pong_player(monkeypatch: pytest.MonkeyPatch) -> str:
 
         return evaluation
 
-    monkeypatch.setattr(learning_players, "milestone_evaluation", confirmation_faked)
-    return "fake-pong"
+    def pong(argv: list[str]) -> int:
+        return main(
+            argv,
+            learning_players={**LEARNING_PLAYERS, "fake-pong": player},
+            make_milestone_evaluation=confirmation_faked,
+        )
+
+    return pong
 
 
 def test_pong_resume_refuses_a_run_that_had_its_confirmation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    fake_pong_player: str,
+    pong_with_fake_pong: PongCommand,
 ) -> None:
     # Stopped at its Milestone of Step 20, before its Budget, and confirmed: a
     # fixed result, of one Game, rather than one played.
     monkeypatch.setenv("PONG_AI_BOT_RUNS_DIR", str(tmp_path / "runs"))
     run = RunDirectory.create(
-        player=fake_pong_player,
+        player="fake-pong",
         name="tiny",
         seed=1,
         settings=RunSettings(budget=30, checkpoint_every=5, milestone_every=20),
@@ -715,7 +723,7 @@ def test_pong_resume_refuses_a_run_that_had_its_confirmation(
     )
     files = sorted(run.path.iterdir())
 
-    exit_code = main(["resume", str(run.path), "--device", "cpu"])
+    exit_code = pong_with_fake_pong(["resume", str(run.path), "--device", "cpu"])
 
     assert exit_code == 1
     assert capsys.readouterr().err.splitlines()[-1] == (
@@ -747,12 +755,10 @@ def test_pong_evaluate_plays_a_milestone_after_its_run_and_records_nothing_in_it
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    fake_pong_player: str,
+    pong_with_fake_pong: PongCommand,
 ) -> None:
     monkeypatch.setenv("PONG_AI_BOT_RUNS_DIR", str(tmp_path / "runs"))
-    run = RunDirectory.create(
-        player=fake_pong_player, name="tiny", seed=1, commit=A_COMMIT
-    )
+    run = RunDirectory.create(player="fake-pong", name="tiny", seed=1, commit=A_COMMIT)
     milestone = milestone_moving_up(run, step=20)
     # The Run's own Evaluation of the Milestone, a fixed result of one Game.
     run.record_evaluation(
@@ -761,7 +767,7 @@ def test_pong_evaluate_plays_a_milestone_after_its_run_and_records_nothing_in_it
     recorded = (run.path / "evaluations.jsonl").read_text(encoding="utf-8")
     output = tmp_path / "milestone.jsonl"
 
-    exit_code = main(
+    exit_code = pong_with_fake_pong(
         ["evaluate", "--milestone", str(milestone), "--output", str(output)]
     )
 
@@ -783,18 +789,16 @@ def test_pong_evaluate_refuses_to_add_a_milestone_s_line_to_its_run_s_results(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    fake_pong_player: str,
+    pong_with_fake_pong: PongCommand,
 ) -> None:
     # Only the Run itself records its Evaluations, so that one after it never
     # changes the Milestone it chooses (#17).
     monkeypatch.setenv("PONG_AI_BOT_RUNS_DIR", str(tmp_path / "runs"))
-    run = RunDirectory.create(
-        player=fake_pong_player, name="tiny", seed=1, commit=A_COMMIT
-    )
+    run = RunDirectory.create(player="fake-pong", name="tiny", seed=1, commit=A_COMMIT)
     milestone = milestone_moving_up(run, step=20)
     files = sorted(run.path.iterdir())
 
-    exit_code = main(
+    exit_code = pong_with_fake_pong(
         [
             "evaluate",
             "--milestone",
@@ -823,7 +827,7 @@ def test_pong_evaluate_refuses_what_is_not_a_milestone_it_can_evaluate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    fake_pong_player: str,
+    pong_with_fake_pong: PongCommand,
     given: str,
     reason: str,
 ) -> None:
@@ -839,7 +843,7 @@ def test_pong_evaluate_refuses_what_is_not_a_milestone_it_can_evaluate(
         # A test environment's Games have no score to count them by (#17).
         path = run.save_milestone(20, lambda file: file.write(b"saved")).path
 
-    exit_code = main(["evaluate", "--milestone", str(path)])
+    exit_code = pong_with_fake_pong(["evaluate", "--milestone", str(path)])
 
     assert exit_code == 1
     out, err = capsys.readouterr()
@@ -879,12 +883,14 @@ def test_pong_train_evaluates_each_milestone_on_the_regular_set(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    fake_pong_player: str,
+    pong_with_fake_pong: PongCommand,
 ) -> None:
     # Slow for the learner's optimizer, as above.
     monkeypatch.setenv("PONG_AI_BOT_RUNS_DIR", str(tmp_path / "runs"))
 
-    exit_code = main(["train", "--player", fake_pong_player, *TINY_EVALUATED_RUN])
+    exit_code = pong_with_fake_pong(
+        ["train", "--player", "fake-pong", *TINY_EVALUATED_RUN]
+    )
 
     assert exit_code == 0
     [path] = (tmp_path / "runs").iterdir()
@@ -925,14 +931,16 @@ def test_ctrl_c_in_the_run_s_last_evaluation_leaves_it_to_pong_resume(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    fake_pong_player: str,
+    pong_with_fake_pong: PongCommand,
 ) -> None:
     # Slow for the learner's optimizer, as above. Ctrl+C in the Evaluation at
     # the Budget, the Run's 3rd.
     monkeypatch.setenv("PONG_AI_BOT_RUNS_DIR", str(tmp_path / "runs"))
     monkeypatch.setattr(OneStepPong, "ctrl_c_on", 3)
 
-    exit_code = main(["train", "--player", fake_pong_player, *TINY_EVALUATED_RUN])
+    exit_code = pong_with_fake_pong(
+        ["train", "--player", "fake-pong", *TINY_EVALUATED_RUN]
+    )
 
     assert exit_code == 130
     out = capsys.readouterr().out.splitlines()
@@ -949,7 +957,7 @@ def test_ctrl_c_in_the_run_s_last_evaluation_leaves_it_to_pong_resume(
     assert run.checkpoints()[-1].step == 30
     monkeypatch.setattr(OneStepPong, "ctrl_c_on", None)
 
-    exit_code = main(["resume", str(path), "--device", "cpu"])
+    exit_code = pong_with_fake_pong(["resume", str(path), "--device", "cpu"])
 
     # The Milestone at the Budget is measured, and then the best is confirmed.
     assert exit_code == 0
@@ -967,13 +975,15 @@ def test_ctrl_c_in_the_run_s_confirmation_leaves_it_to_pong_resume_and_only_it(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    fake_pong_player: str,
+    pong_with_fake_pong: PongCommand,
 ) -> None:
     # Slow for the learner's optimizer, as above.
     monkeypatch.setenv("PONG_AI_BOT_RUNS_DIR", str(tmp_path / "runs"))
     monkeypatch.setattr(FakeConfirmation, "ctrl_c", True)
 
-    exit_code = main(["train", "--player", fake_pong_player, *TINY_EVALUATED_RUN])
+    exit_code = pong_with_fake_pong(
+        ["train", "--player", "fake-pong", *TINY_EVALUATED_RUN]
+    )
 
     assert exit_code == 130
     out = capsys.readouterr().out.splitlines()
@@ -984,7 +994,7 @@ def test_ctrl_c_in_the_run_s_confirmation_leaves_it_to_pong_resume_and_only_it(
     assert run.confirmation() is None
     monkeypatch.setattr(FakeConfirmation, "ctrl_c", False)
 
-    exit_code = main(["resume", str(path), "--device", "cpu"])
+    exit_code = pong_with_fake_pong(["resume", str(path), "--device", "cpu"])
 
     # The Run at its Budget, measured, has only its Confirmation left.
     assert exit_code == 0
@@ -996,4 +1006,4 @@ def test_ctrl_c_in_the_run_s_confirmation_leaves_it_to_pong_resume_and_only_it(
     assert run.checkpoints()[-1].step == 30
 
     # And once it had it, it never goes on.
-    assert main(["resume", str(path), "--device", "cpu"]) == 1
+    assert pong_with_fake_pong(["resume", str(path), "--device", "cpu"]) == 1

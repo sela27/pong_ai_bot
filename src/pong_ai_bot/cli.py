@@ -5,6 +5,7 @@ import copy
 import secrets
 import sys
 import warnings
+from collections.abc import Callable, Mapping
 from dataclasses import fields
 from enum import Enum
 from pathlib import Path
@@ -12,7 +13,12 @@ from typing import TYPE_CHECKING
 
 from pong_ai_bot.environment import PongEnv
 from pong_ai_bot.evaluation import Evaluation, SeedSet
-from pong_ai_bot.learning_players import LEARNING_PLAYERS, evaluate_milestone
+from pong_ai_bot.learning_players import (
+    LEARNING_PLAYERS,
+    LearningPlayer,
+    evaluate_milestone,
+    milestone_evaluation,
+)
 from pong_ai_bot.run_directory import (
     EVALUATIONS_FILE,
     SETTINGS_FILE,
@@ -20,14 +26,39 @@ from pong_ai_bot.run_directory import (
     SavedFile,
 )
 from pong_ai_bot.run_settings import RunSettings
-from pong_ai_bot.scripted_players import SCRIPTED_PLAYERS, evaluate_scripted_player
+from pong_ai_bot.scripted_players import (
+    SCRIPTED_PLAYERS,
+    PongMaker,
+    evaluate_scripted_player,
+)
 from pong_ai_bot.width_choice import choose_width
 
 if TYPE_CHECKING:
     import torch
+    from torch import nn
+
+    from pong_ai_bot.evaluation import EnvMaker
+    from pong_ai_bot.training import MilestoneEvaluation
+
+MilestoneEvaluationMaker = Callable[["nn.Module", "EnvMaker"], "MilestoneEvaluation"]
+"""Makes the Evaluation a Run plays of its Milestones, as `milestone_evaluation`
+does, from the Evaluation's own network and the player's environment."""
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    learning_players: Mapping[str, LearningPlayer] = LEARNING_PLAYERS,
+    make_milestone_evaluation: MilestoneEvaluationMaker = milestone_evaluation,
+    pong: PongMaker = PongEnv,
+) -> int:
+    """Run `pong` with the command line `argv`, sys.argv's unless given, and give
+    its exit code.
+
+    The rest are what it plays, the real ones unless a test gives fakes: the
+    learning players by name, the Evaluation of a Run's Milestones, and the
+    environment the Scripted players' Evaluation plays.
+    """
     parser = argparse.ArgumentParser(
         prog="pong",
         description="A locally built Pong game and a DQN Agent that learns to play it.",
@@ -109,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
     train_command.add_argument(
         "--player",
         required=True,
-        choices=list(LEARNING_PLAYERS),
+        choices=list(learning_players),
         help=(
             "the learning player to train: the Position learner, or a test "
             "environment's; the Agent comes later"
@@ -159,13 +190,21 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "measure-env":
         return _measure_env()
     elif args.command == "evaluate":
-        return _evaluate(args)
+        return _evaluate(args, learning_players=learning_players, pong=pong)
     elif args.command == "choose-width":
-        return _choose_width()
+        return _choose_width(pong=pong)
     elif args.command == "train":
-        return _train(args)
+        return _train(
+            args,
+            learning_players=learning_players,
+            make_milestone_evaluation=make_milestone_evaluation,
+        )
     elif args.command == "resume":
-        return _resume(args)
+        return _resume(
+            args,
+            learning_players=learning_players,
+            make_milestone_evaluation=make_milestone_evaluation,
+        )
     return 0
 
 
@@ -191,18 +230,26 @@ def _measure_env() -> int:
     return 1
 
 
-def _evaluate(args: argparse.Namespace) -> int:
+def _evaluate(
+    args: argparse.Namespace,
+    *,
+    learning_players: Mapping[str, LearningPlayer],
+    pong: PongMaker,
+) -> int:
     """`pong evaluate`: the Evaluation, on the regular set, of a Scripted player,
     or of a Milestone after its Run, at the Milestone's Step."""
     if args.scripted is not None:
-        evaluation, step = evaluate_scripted_player(args.scripted), None
+        evaluation, step = evaluate_scripted_player(args.scripted, pong=pong), None
     else:
-        found = _milestone_to_evaluate(args.milestone, output=args.output)
+        found = _milestone_to_evaluate(
+            args.milestone, output=args.output, learning_players=learning_players
+        )
         if isinstance(found, str):
             print(found, file=sys.stderr)
             return 1
         run, milestone = found
-        evaluation, step = evaluate_milestone(run, milestone), milestone.step
+        evaluation = evaluate_milestone(run, milestone, players=learning_players)
+        step = milestone.step
     print(evaluation.summary_line(seed_set=SeedSet.REGULAR, step=step))
     if args.output is not None:
         line = evaluation.json_line(seed_set=SeedSet.REGULAR, step=step)
@@ -212,7 +259,10 @@ def _evaluate(args: argparse.Namespace) -> int:
 
 
 def _milestone_to_evaluate(
-    path: Path, *, output: Path | None
+    path: Path,
+    *,
+    output: Path | None,
+    learning_players: Mapping[str, LearningPlayer],
 ) -> tuple[RunDirectory, SavedFile] | str:
     """The Milestone at `path` and its Run, for `pong evaluate` to evaluate, adding
     its line to `output` if given; or the reason it can't."""
@@ -228,7 +278,7 @@ def _milestone_to_evaluate(
     )
     if milestone is None:
         return not_a_milestone
-    if not LEARNING_PLAYERS[run.player].evaluated:
+    if not learning_players[run.player].evaluated:
         return (
             f"The Run's player, {run.player}, has no Evaluation: a test "
             "environment's Games have no score to count them by."
@@ -245,9 +295,9 @@ def _milestone_to_evaluate(
     return run, milestone
 
 
-def _choose_width() -> int:
+def _choose_width(*, pong: PongMaker) -> int:
     def evaluate_at(name: str, width: float) -> Evaluation:
-        evaluation = evaluate_scripted_player(name, width=width)
+        evaluation = evaluate_scripted_player(name, width=width, pong=pong)
         # Each Evaluation as it ends, since all of them take minutes.
         summary = evaluation.summary_line(seed_set=SeedSet.REGULAR)
         print(f"{name} at {width:.0%}: {summary}", flush=True)
@@ -328,7 +378,12 @@ def _training_device(name: str) -> torch.device | None:
     return device
 
 
-def _train(args: argparse.Namespace) -> int:
+def _train(
+    args: argparse.Namespace,
+    *,
+    learning_players: Mapping[str, LearningPlayer],
+    make_milestone_evaluation: MilestoneEvaluationMaker,
+) -> int:
     device = _training_device(args.device)
     if device is None:
         return 1
@@ -344,10 +399,21 @@ def _train(args: argparse.Namespace) -> int:
         player=args.player, name=args.name, seed=args.seed, settings=settings
     )
     print(f"The Run's directory: {run.path}", flush=True)
-    return _train_or_resume(run, device, resumed=False)
+    return _train_or_resume(
+        run,
+        device,
+        resumed=False,
+        player=learning_players[run.player],
+        make_milestone_evaluation=make_milestone_evaluation,
+    )
 
 
-def _resume(args: argparse.Namespace) -> int:
+def _resume(
+    args: argparse.Namespace,
+    *,
+    learning_players: Mapping[str, LearningPlayer],
+    make_milestone_evaluation: MilestoneEvaluationMaker,
+) -> int:
     device = _training_device(args.device)
     if device is None:
         return 1
@@ -366,7 +432,8 @@ def _resume(args: argparse.Namespace) -> int:
     # The Run's end saves a Milestone at its Budget, which may come after its
     # latest checkpoint. A Run with Evaluations then evaluates it, and confirms
     # its best Milestone: until it has its Confirmation, its resume gives it.
-    evaluated = LEARNING_PLAYERS[run.player].evaluated
+    player = learning_players[run.player]
+    evaluated = player.evaluated
     if not evaluated and any(saved.step == budget for saved in run.milestones()):
         print(
             f"The Run reached its Budget, {budget:,} Steps, already: there is "
@@ -381,7 +448,13 @@ def _resume(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-    return _train_or_resume(run, device, resumed=True)
+    return _train_or_resume(
+        run,
+        device,
+        resumed=True,
+        player=player,
+        make_milestone_evaluation=make_milestone_evaluation,
+    )
 
 
 def _open_run(path: Path) -> RunDirectory:
@@ -397,10 +470,18 @@ def _open_run(path: Path) -> RunDirectory:
     return run
 
 
-def _train_or_resume(run: RunDirectory, device: torch.device, *, resumed: bool) -> int:
+def _train_or_resume(
+    run: RunDirectory,
+    device: torch.device,
+    *,
+    resumed: bool,
+    player: LearningPlayer,
+    make_milestone_evaluation: MilestoneEvaluationMaker,
+) -> int:
     """Train the Run `run` on `device`, a new one or, if `resumed`, one resumed
-    from its latest full checkpoint, with a new learner of its player, and say how
-    it stopped."""
+    from its latest full checkpoint, with a new learner of its player, `player`,
+    evaluated by the Evaluation `make_milestone_evaluation` makes if it has
+    Evaluations, and say how it stopped."""
     # Only here: PyTorch takes seconds to import, and the other commands don't
     # need it.
     import torch
@@ -408,11 +489,9 @@ def _train_or_resume(run: RunDirectory, device: torch.device, *, resumed: bool) 
 
     from pong_ai_bot.keep_awake import keep_windows_awake
     from pong_ai_bot.learner import Learner, LearnerSettings
-    from pong_ai_bot.learning_players import milestone_evaluation
     from pong_ai_bot.training import resume_run, train_run
 
     settings = run.settings
-    player = LEARNING_PLAYERS[run.player]
     # The network's first weights come from the Run's seed too. A resumed Run's
     # learner takes on its checkpoint's instead.
     torch.manual_seed(run.seed)
@@ -428,7 +507,7 @@ def _train_or_resume(run: RunDirectory, device: torch.device, *, resumed: bool) 
     # leaves PyTorch's random generator as it was. The training is stopped while
     # it plays, its 100 Games together on the graphics card (#13).
     evaluation = (
-        milestone_evaluation(copy.deepcopy(network), player.make_env)
+        make_milestone_evaluation(copy.deepcopy(network), player.make_env)
         if player.evaluated
         else None
     )
