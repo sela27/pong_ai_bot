@@ -62,7 +62,10 @@ def trained(env: gym.Env[Any, Any], *, actions: int) -> tuple[Learner, nn.Module
         discount=0.99,
         double_dqn=True,
     )
-    learner = Learner(network, actions=actions, settings=settings, seed=SEED)
+    # A test environment's input, one number, is a stack of one Observation.
+    learner = Learner(
+        network, actions=actions, stack_length=1, settings=settings, seed=SEED
+    )
     epsilon = EpsilonSchedule(start=1.0, end=0.01, decay_steps=100)
 
     train(env, learner, steps=1_000, epsilon=epsilon, seed=SEED)

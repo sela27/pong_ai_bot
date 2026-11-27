@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from pong_ai_bot.learner import Learner
 
 INPUT = np.array([1.0], np.float32)
+"""The input of every Step: a stack of one Observation, the number 1."""
 
 
 def play(learner: Learner, steps: int) -> None:
@@ -51,11 +52,11 @@ def test_a_learner_given_another_learners_state_learns_on_as_the_other_does() ->
     )
     torch.manual_seed(1)
     network = nn.Linear(1, 2)
-    learner = Learner(network, actions=2, settings=settings, seed=1)
+    learner = Learner(network, actions=2, stack_length=1, settings=settings, seed=1)
     play(learner, steps=10)
     torch.manual_seed(2)
     other_network = nn.Linear(1, 2)
-    other = Learner(other_network, actions=2, settings=settings, seed=2)
+    other = Learner(other_network, actions=2, stack_length=1, settings=settings, seed=2)
 
     other.load_state_dict(learner.state_dict())
     play(learner, steps=10)
@@ -91,7 +92,9 @@ def test_the_network_is_copied_whole_to_the_target_network_every_so_many_steps()
         double_dqn=True,
     )
     torch.manual_seed(1)
-    learner = Learner(nn.Linear(1, 2), actions=2, settings=settings, seed=1)
+    learner = Learner(
+        nn.Linear(1, 2), actions=2, stack_length=1, settings=settings, seed=1
+    )
 
     copies = []
     for step in range(1, 8):
