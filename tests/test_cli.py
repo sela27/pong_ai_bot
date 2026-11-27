@@ -23,18 +23,21 @@ def run_pong(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 def test_pong_help_runs() -> None:
+    # The only test that runs the installed command itself, to show it works. The
+    # others call its entry point in-process, to keep the hook fast.
     result = run_pong("--help")
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.startswith("usage: pong"), result.stdout
 
 
-def test_pong_has_a_measure_env_command() -> None:
+def test_pong_has_a_measure_env_command(capsys: pytest.CaptureFixture[str]) -> None:
     # Only its help: the measurement itself is a script, not a test (issue #11).
-    result = run_pong("measure-env", "--help")
+    with pytest.raises(SystemExit) as exit_:
+        main(["measure-env", "--help"])
 
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.startswith("usage: pong measure-env"), result.stdout
+    assert exit_.value.code == 0
+    assert capsys.readouterr().out.startswith("usage: pong measure-env")
 
 
 class OneStepGames(gym.Env[npt.NDArray[np.uint8], np.int64]):
@@ -112,9 +115,13 @@ def test_pong_has_a_choose_width_command(capsys: pytest.CaptureFixture[str]) -> 
     assert capsys.readouterr().out.startswith("usage: pong choose-width")
 
 
-def test_pong_evaluate_offers_no_confirmation_set() -> None:
+def test_pong_evaluate_offers_no_confirmation_set(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     # Only the end of a Run plays the Confirmation's set (issue #16).
-    result = run_pong("evaluate", "--help")
+    with pytest.raises(SystemExit) as exit_:
+        main(["evaluate", "--help"])
 
-    assert result.returncode == 0, result.stderr
-    assert "confirmation" not in result.stdout.lower(), result.stdout
+    assert exit_.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "confirmation" not in help_text.lower(), help_text
