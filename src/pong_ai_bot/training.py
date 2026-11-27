@@ -243,8 +243,9 @@ def train_run(
     the Run with a full checkpoint at the Milestone's Step, even at the Budget, so
     that the Run's resume measures the Milestone. In the Confirmation, it
     abandons it the same way, so that the resume gives it. A second Ctrl+C stops
-    it at once, with a KeyboardInterrupt. It says where the Run stopped: at its
-    end, or by Ctrl+C.
+    it at once, with a KeyboardInterrupt. However the Run ends, Ctrl+C is ignored
+    from then on, to the process's end, so that a press as `pong` ends changes
+    nothing. It says where the Run stopped: at its end, or by Ctrl+C.
 
     All along, it holds the request `stay_awake` makes, that Windows doesn't sleep,
     and releases it however the Run ends.

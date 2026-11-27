@@ -203,17 +203,7 @@ class RunDirectory:
         that can't name a directory, fails with an InvalidRunError, with nothing
         created.
         """
-        if seed >= SEED_LIMIT:
-            raise InvalidRunError(
-                f"A Run's seed must be below {SEED_LIMIT:,}, the Evaluation's seeds; "
-                f"got {seed:,}."
-            )
-        for part, value in (("player", player), ("name", name)):
-            if not re.fullmatch(r"[A-Za-z0-9_-]+", value):
-                raise InvalidRunError(
-                    f"A Run's {part} must be letters, digits, '-' and '_' only, to "
-                    f"name its directory; got {value!r}."
-                )
+        cls.check_new(player=player, name=name, seed=seed)
         if settings is None:
             settings = RunSettings()
         if commit is None:
@@ -244,6 +234,24 @@ class RunDirectory:
             json.dumps(record, indent=2) + "\n", encoding="utf-8"
         )
         return run
+
+    @staticmethod
+    def check_new(*, player: str, name: str, seed: int) -> None:
+        """Fail with an InvalidRunError, as `create` does, if a new Run can't have
+        the seed `seed`, or the player `player` or the name `name`. Nothing is
+        created, so `pong train` refuses a Run at once, before its setup, which
+        takes seconds."""
+        if seed >= SEED_LIMIT:
+            raise InvalidRunError(
+                f"A Run's seed must be below {SEED_LIMIT:,}, the Evaluation's seeds; "
+                f"got {seed:,}."
+            )
+        for part, value in (("player", player), ("name", name)):
+            if not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+                raise InvalidRunError(
+                    f"A Run's {part} must be letters, digits, '-' and '_' only, to "
+                    f"name its directory; got {value!r}."
+                )
 
     @classmethod
     def open(

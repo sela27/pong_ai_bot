@@ -3,6 +3,7 @@
 import json
 import re
 import shutil
+import signal
 import subprocess
 import sysconfig
 from collections.abc import Callable
@@ -165,12 +166,23 @@ def test_pong_train_refuses_the_cpu_unless_asked_and_creates_no_run(
     ],
     ids=["seed", "name"],
 )
-def test_pong_train_refuses_a_seed_or_name_a_run_can_t_have_and_creates_no_run(
+def test_pong_train_refuses_a_seed_or_name_a_run_can_t_have_at_once_and_creates_no_run(
     runs: Path, capsys: pytest.CaptureFixture[str], option: list[str], reason: str
 ) -> None:
     run = ["--player", "test-env-1", "--name", "tiny", "--seed", "1"]
+    player = LEARNING_PLAYERS["test-env-1"]
 
-    exit_code = main(["train", *run, "--device", "cpu", *option])
+    def make_network() -> Any:
+        pytest.fail("the Run's setup began before the refusal")
+
+    exit_code = main(
+        ["train", *run, "--device", "cpu", *option],
+        # At once: before the Run's setup, which takes seconds.
+        learning_players={
+            **LEARNING_PLAYERS,
+            "test-env-1": replace(player, make_network=make_network),
+        },
+    )
 
     assert exit_code == 1
     assert reason in capsys.readouterr().err.splitlines()[-1]
@@ -330,9 +342,13 @@ def test_ctrl_c_stops_pong_train_after_its_step_with_a_full_checkpoint(
 
     # As a program stopped by Ctrl+C: 128 and SIGINT's number, 2.
     assert exit_code == 130
-    assert capsys.readouterr().out.splitlines()[-1] == (
+    out, err = capsys.readouterr()
+    assert out.splitlines()[-1] == (
         "Ctrl+C stopped the Run at Step 12, with a full checkpoint there."
     )
+    assert err == ""
+    # A second press, as `pong` ends, changes nothing: it is ignored.
+    assert signal.getsignal(signal.SIGINT) == signal.SIG_IGN
     [path] = runs.iterdir()
     run = RunDirectory.open(path)
     # The latest two checkpoints are kept, the one of Step 5 deleted.
@@ -475,6 +491,100 @@ def pressing_ctrl_c_in_step(at: int, *, presses: int) -> dict[str, LearningPlaye
         return CtrlCInStep(player.make_env(), at=at, presses=presses)
 
     return {**LEARNING_PLAYERS, "test-env-1": replace(player, make_env=make_env)}
+
+
+@pytest.fixture
+def pressing_ctrl_c_in_the_setup() -> dict[str, LearningPlayer]:
+    """The learning players, with test environment 1's pressing Ctrl+C as its
+    network is made, in the setup before its Run's first Step, as the developer
+    would right after starting it: before its learner, and Adam with it, is made."""
+    player = LEARNING_PLAYERS["test-env-1"]
+
+    def make_network() -> Any:
+        press_ctrl_c()
+        return player.make_network()
+
+    return {
+        **LEARNING_PLAYERS,
+        "test-env-1": replace(player, make_network=make_network),
+    }
+
+
+def test_ctrl_c_in_pong_train_s_setup_stops_it_with_one_line_and_no_run_directory(
+    runs: Path,
+    capsys: pytest.CaptureFixture[str],
+    pressing_ctrl_c_in_the_setup: dict[str, LearningPlayer],
+) -> None:
+    run = ["--player", "test-env-1", "--name", "tiny", "--seed", "1"]
+
+    exit_code = main(
+        ["train", *run, "--device", "cpu"],
+        learning_players=pressing_ctrl_c_in_the_setup,
+    )
+
+    assert exit_code == 130
+    # One line, and no traceback.
+    assert capsys.readouterr().err.splitlines() == [
+        "Ctrl+C stopped pong train before the Run's first Step."
+    ]
+    # The Run's directory comes after the setup, so none is left to delete.
+    assert not runs.exists()
+
+
+def test_a_second_ctrl_c_after_pong_train_s_setup_stopped_is_ignored(
+    pressing_ctrl_c_in_the_setup: dict[str, LearningPlayer],
+) -> None:
+    run = ["--player", "test-env-1", "--name", "tiny", "--seed", "1"]
+
+    exit_code = main(
+        ["train", *run, "--device", "cpu"],
+        learning_players=pressing_ctrl_c_in_the_setup,
+    )
+
+    assert exit_code == 130
+    # As the developer presses twice: the second comes as `pong` ends, which
+    # takes most of a second once PyTorch is loaded. It is ignored to the
+    # process's end, and not by Python's own handler: Python removes its handlers
+    # as it ends, and then Windows's own would end the process with its own exit
+    # code for Ctrl+C, 0xC000013A, instead of 130.
+    assert signal.getsignal(signal.SIGINT) == signal.SIG_IGN
+
+
+def test_ctrl_c_is_as_it_was_after_pong_train_refuses_a_run() -> None:
+    handler_before = signal.getsignal(signal.SIGINT)
+    run = ["--player", "test-env-1", "--name", "a/b", "--seed", "1"]
+
+    # Refused, before its Run.
+    exit_code = main(["train", *run, "--device", "cpu"])
+
+    assert exit_code == 1
+    assert signal.getsignal(signal.SIGINT) is handler_before
+
+
+def test_ctrl_c_in_pong_resume_s_setup_stops_it_with_one_line_and_the_run_as_it_was(
+    capsys: pytest.CaptureFixture[str],
+    pressing_ctrl_c_in_the_setup: dict[str, LearningPlayer],
+) -> None:
+    # Created at the code's own commit, so that resuming it gives no warning.
+    run = RunDirectory.create(
+        player="test-env-1",
+        name="tiny",
+        seed=1,
+        settings=RunSettings(budget=30, checkpoint_every=5),
+    )
+    run.save_checkpoint(5, lambda file: file.write(b"saved"))
+    files = {path: path.read_bytes() for path in run.path.iterdir()}
+
+    exit_code = main(
+        ["resume", str(run.path), "--device", "cpu"],
+        learning_players=pressing_ctrl_c_in_the_setup,
+    )
+
+    assert exit_code == 130
+    assert capsys.readouterr().err.splitlines() == [
+        "Ctrl+C stopped pong resume before the Run went on."
+    ]
+    assert {path: path.read_bytes() for path in run.path.iterdir()} == files
 
 
 def train_stopped_by_ctrl_c(settings: list[str], *, at: int, presses: int) -> Path:
