@@ -12,8 +12,13 @@ from typing import TYPE_CHECKING, get_args
 
 from pong_ai_bot.environment import PongEnv
 from pong_ai_bot.evaluation import Evaluation, SeedSet
-from pong_ai_bot.learning_players import LEARNING_PLAYERS
-from pong_ai_bot.run_directory import RunDirectory
+from pong_ai_bot.learning_players import LEARNING_PLAYERS, evaluate_milestone
+from pong_ai_bot.run_directory import (
+    EVALUATIONS_FILE,
+    SETTINGS_FILE,
+    RunDirectory,
+    SavedFile,
+)
 from pong_ai_bot.run_settings import RunSettings
 from pong_ai_bot.scripted_players import SCRIPTED_PLAYERS, evaluate_scripted_player
 from pong_ai_bot.width_choice import choose_width
@@ -50,17 +55,26 @@ def main(argv: list[str] | None = None) -> int:
         help="evaluate a player in the Agent's place, on the regular set of seeds",
         description=(
             "Play an Evaluation of a player in the Agent's place: one Game against "
-            "the Opponent for each of the regular set's 100 seeds. Print its "
-            "summary line."
+            "the Opponent for each of the regular set's 100 seeds. The player is a "
+            "Scripted player, or a Milestone of a Run, after the Run, played "
+            "greedily, on the CPU, by a network of the kind of the Run's player. "
+            "Print its summary line. It never records anything in the Run, so it "
+            "never changes the Milestone the Run chooses."
         ),
     )
-    # Exactly one player to evaluate, of any kind. So far the only kind is a
-    # Scripted player.
+    # Exactly one player to evaluate, of any kind: a Scripted player, or a learning
+    # player's Milestone.
     player = evaluate_command.add_mutually_exclusive_group(required=True)
     player.add_argument(
         "--scripted",
         choices=list(SCRIPTED_PLAYERS),
         help="the Scripted player to evaluate",
+    )
+    player.add_argument(
+        "--milestone",
+        type=Path,
+        metavar="MILESTONE_FILE",
+        help="the Milestone to evaluate, a file in its Run's directory",
     )
     evaluate_command.add_argument(
         "--output",
@@ -145,7 +159,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "measure-env":
         return _measure_env()
     elif args.command == "evaluate":
-        _evaluate(args.scripted, output=args.output)
+        return _evaluate(args)
     elif args.command == "choose-width":
         return _choose_width()
     elif args.command == "train":
@@ -177,12 +191,58 @@ def _measure_env() -> int:
     return 1
 
 
-def _evaluate(scripted: str, *, output: Path | None) -> None:
-    evaluation = evaluate_scripted_player(scripted)
-    print(evaluation.summary_line(seed_set=SeedSet.REGULAR))
-    if output is not None:
-        with output.open("a", encoding="utf-8") as file:
-            file.write(evaluation.json_line(seed_set=SeedSet.REGULAR) + "\n")
+def _evaluate(args: argparse.Namespace) -> int:
+    """`pong evaluate`: the Evaluation, on the regular set, of a Scripted player,
+    or of a Milestone after its Run, at the Milestone's Step."""
+    if args.scripted is not None:
+        evaluation, step = evaluate_scripted_player(args.scripted), None
+    else:
+        found = _milestone_to_evaluate(args.milestone, output=args.output)
+        if isinstance(found, str):
+            print(found, file=sys.stderr)
+            return 1
+        run, milestone = found
+        evaluation, step = evaluate_milestone(run, milestone), milestone.step
+    print(evaluation.summary_line(seed_set=SeedSet.REGULAR, step=step))
+    if args.output is not None:
+        line = evaluation.json_line(seed_set=SeedSet.REGULAR, step=step)
+        with args.output.open("a", encoding="utf-8") as file:
+            file.write(line + "\n")
+    return 0
+
+
+def _milestone_to_evaluate(
+    path: Path, *, output: Path | None
+) -> tuple[RunDirectory, SavedFile] | str:
+    """The Milestone at `path` and its Run, for `pong evaluate` to evaluate, adding
+    its line to `output` if given; or the reason it can't."""
+    not_a_milestone = (
+        f"{path} is not a Milestone of a Run: a Run's directory keeps its "
+        "Milestones, named by their Steps, such as milestone_000500000.pt."
+    )
+    if not (path.parent / SETTINGS_FILE).is_file():
+        return not_a_milestone
+    run = _open_run(path.parent)
+    milestone = next(
+        (saved for saved in run.milestones() if saved.path.name == path.name), None
+    )
+    if milestone is None:
+        return not_a_milestone
+    if not LEARNING_PLAYERS[run.player].evaluated:
+        return (
+            f"The Run's player, {run.player}, has no Evaluation: a test "
+            "environment's Games have no score to count them by."
+        )
+    if (
+        output is not None
+        and output.resolve() == (run.path / EVALUATIONS_FILE).resolve()
+    ):
+        return (
+            f"Only the Run itself adds to its {EVALUATIONS_FILE}, so that an "
+            "Evaluation after it never changes the Milestone it chooses. Give "
+            "--output another file."
+        )
+    return run, milestone
 
 
 def _choose_width() -> int:
@@ -299,13 +359,7 @@ def _resume(args: argparse.Namespace) -> int:
     device = _training_device(args.device)
     if device is None:
         return 1
-    # Shown as a line of their own, such as that the commit changed, rather than
-    # as Python shows a warning, with the line of code that gave it.
-    with warnings.catch_warnings(record=True) as warned:
-        warnings.simplefilter("always")
-        run = RunDirectory.open(args.run)
-    for warning in warned:
-        print(f"Warning: {warning.message}", file=sys.stderr)
+    run = _open_run(args.run)
     # So that the Confirmation's set never becomes a set to choose by (issues #13,
     # #14).
     confirmation = run.confirmation()
@@ -336,6 +390,19 @@ def _resume(args: argparse.Namespace) -> int:
         )
         return 1
     return _train_or_resume(run, device, resumed=True)
+
+
+def _open_run(path: Path) -> RunDirectory:
+    """The Run whose directory is `path`, with each warning of opening it, such as
+    that the code is at another commit than the Run was created at, printed."""
+    # Shown as a line of their own rather than as Python shows a warning, with the
+    # line of code that gave it.
+    with warnings.catch_warnings(record=True) as warned:
+        warnings.simplefilter("always")
+        run = RunDirectory.open(path)
+    for warning in warned:
+        print(f"Warning: {warning.message}", file=sys.stderr)
+    return run
 
 
 def _train_or_resume(run: RunDirectory, device: torch.device, *, resumed: bool) -> int:

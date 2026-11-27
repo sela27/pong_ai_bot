@@ -26,7 +26,8 @@ from pong_ai_bot.test_environments import (
 if TYPE_CHECKING:
     from torch import nn
 
-    from pong_ai_bot.run_directory import SavedFile
+    from pong_ai_bot.learner import GreedyPlayer
+    from pong_ai_bot.run_directory import RunDirectory, SavedFile
     from pong_ai_bot.training import MilestoneEvaluation
 
 
@@ -127,6 +128,40 @@ def milestone_evaluation(network: nn.Module, make_env: EnvMaker) -> MilestoneEva
     `network` is the Evaluation's own, of the player's kind, on the device the
     Games are played on: each Milestone loaded changes its weights.
     """
+
+    def evaluate_in_the_run(
+        milestone: SavedFile, *, seed_set: SeedSet, stop: Callable[[], bool]
+    ) -> Evaluation:
+        player = _greedy_player(network, milestone)
+        return evaluate(player, make_env, seed_set.seeds, stop=stop)
+
+    return evaluate_in_the_run
+
+
+def evaluate_milestone(run: RunDirectory, milestone: SavedFile) -> Evaluation:
+    """The Evaluation of `milestone`, one of the Run `run`'s Milestones, after the
+    Run, as `pong evaluate` plays it: its greedy player, on the CPU, in the
+    environment of the Run's player, on the regular set.
+
+    Never on the Confirmation's set, which only the end of a Run plays, once. It
+    records nothing in the Run either, so it never changes the Milestone the Run
+    chooses (issue #16).
+    """
+    make_env = LEARNING_PLAYERS[run.player].make_env
+    return evaluate(milestone_player(run, milestone), make_env, SeedSet.REGULAR.seeds)
+
+
+def milestone_player(run: RunDirectory, milestone: SavedFile) -> GreedyPlayer:
+    """The greedy player of `milestone`, one of the Run `run`'s Milestones: a new
+    network of the kind of the Run's player, as its settings file records it, on
+    the CPU, with the weights the Milestone holds."""
+    network = LEARNING_PLAYERS[run.player].make_network()
+    return _greedy_player(network, milestone)
+
+
+def _greedy_player(network: nn.Module, milestone: SavedFile) -> GreedyPlayer:
+    """The greedy player of `network`, with the weights `milestone` holds loaded
+    into it, on the device it is on."""
     # Only here: PyTorch takes seconds to import, and `pong`'s other commands
     # don't need it.
     import torch
@@ -134,11 +169,5 @@ def milestone_evaluation(network: nn.Module, make_env: EnvMaker) -> MilestoneEva
     from pong_ai_bot.learner import GreedyPlayer
 
     device = next(network.parameters()).device
-
-    def evaluate_milestone(
-        milestone: SavedFile, *, seed_set: SeedSet, stop: Callable[[], bool]
-    ) -> Evaluation:
-        network.load_state_dict(torch.load(milestone.path, map_location=device))
-        return evaluate(GreedyPlayer(network), make_env, seed_set.seeds, stop=stop)
-
-    return evaluate_milestone
+    network.load_state_dict(torch.load(milestone.path, map_location=device))
+    return GreedyPlayer(network)

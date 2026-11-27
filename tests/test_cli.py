@@ -729,6 +729,128 @@ def test_pong_resume_refuses_a_run_that_had_its_confirmation(
     assert sorted(run.path.iterdir()) == files
 
 
+def milestone_moving_up(run: RunDirectory, *, step: int) -> Path:
+    """The path of the fake-pong Run `run`'s Milestone at `step`, of a network whose
+    highest Q is always the Action up's, which wins OneStepPong's Games: no
+    weights, and a last bias of 1 for up and 0 for the others."""
+    import torch
+
+    from pong_ai_bot.environment import Action
+
+    weights = {
+        "0.weight": torch.zeros(8, 1),
+        "0.bias": torch.zeros(8),
+        "2.weight": torch.zeros(3, 8),
+        "2.bias": torch.zeros(3),
+    }
+    weights["2.bias"][Action.UP] = 1.0
+    return run.save_milestone(step, lambda file: torch.save(weights, file)).path
+
+
+def test_pong_evaluate_plays_a_milestone_after_its_run_and_records_nothing_in_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    fake_pong_player: str,
+) -> None:
+    monkeypatch.setenv("PONG_AI_BOT_RUNS_DIR", str(tmp_path / "runs"))
+    run = RunDirectory.create(
+        player=fake_pong_player, name="tiny", seed=1, commit=A_COMMIT
+    )
+    milestone = milestone_moving_up(run, step=20)
+    # The Run's own Evaluation of the Milestone, a fixed result of one Game.
+    run.record_evaluation(
+        Evaluation(games=(GameResult(seed=0, score_margin=-3, cut_off=True),)), step=20
+    )
+    recorded = (run.path / "evaluations.jsonl").read_text(encoding="utf-8")
+    output = tmp_path / "milestone.jsonl"
+
+    exit_code = main(
+        ["evaluate", "--milestone", str(milestone), "--output", str(output)]
+    )
+
+    assert exit_code == 0
+    # Every one of the regular set's 100 Games won 21 to 0, by moving up.
+    summary = (
+        "Evaluation on the regular set at Step 20: mean +21.00, std 0.00, min +21, "
+        "100 of 100 Games won, 0 cut off"
+    )
+    assert capsys.readouterr().out.splitlines() == [summary]
+    [line] = [json.loads(line) for line in output.read_text("utf-8").splitlines()]
+    assert (line["step"], line["set"]) == (20, "regular")
+    assert [game["seed"] for game in line["games"]] == list(range(1_000_000, 1_000_100))
+    # The Run's results are as they were, so the Milestone it chooses is too.
+    assert (run.path / "evaluations.jsonl").read_text(encoding="utf-8") == recorded
+
+
+def test_pong_evaluate_refuses_to_add_a_milestone_s_line_to_its_run_s_results(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    fake_pong_player: str,
+) -> None:
+    # Only the Run itself records its Evaluations, so that one after it never
+    # changes the Milestone it chooses (#17).
+    monkeypatch.setenv("PONG_AI_BOT_RUNS_DIR", str(tmp_path / "runs"))
+    run = RunDirectory.create(
+        player=fake_pong_player, name="tiny", seed=1, commit=A_COMMIT
+    )
+    milestone = milestone_moving_up(run, step=20)
+    files = sorted(run.path.iterdir())
+
+    exit_code = main(
+        [
+            "evaluate",
+            "--milestone",
+            str(milestone),
+            "--output",
+            str(run.path / "evaluations.jsonl"),
+        ]
+    )
+
+    assert exit_code == 1
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "evaluations.jsonl" in err.splitlines()[-1], err
+    assert sorted(run.path.iterdir()) == files
+
+
+@pytest.mark.parametrize(
+    ("given", "reason"),
+    [
+        ("checkpoint", "not a Milestone"),
+        ("file outside a run", "not a Milestone"),
+        ("test environment's milestone", "no Evaluation"),
+    ],
+)
+def test_pong_evaluate_refuses_what_is_not_a_milestone_it_can_evaluate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    fake_pong_player: str,
+    given: str,
+    reason: str,
+) -> None:
+    monkeypatch.setenv("PONG_AI_BOT_RUNS_DIR", str(tmp_path / "runs"))
+    player = "test-env-1" if given == "test environment's milestone" else "fake-pong"
+    run = RunDirectory.create(player=player, name="tiny", seed=1, commit=A_COMMIT)
+    if given == "checkpoint":
+        path = run.save_checkpoint(20, lambda file: file.write(b"saved")).path
+    elif given == "file outside a run":
+        path = tmp_path / "milestone_000000020.pt"
+        path.write_bytes(b"saved")
+    else:
+        # A test environment's Games have no score to count them by (#17).
+        path = run.save_milestone(20, lambda file: file.write(b"saved")).path
+
+    exit_code = main(["evaluate", "--milestone", str(path)])
+
+    assert exit_code == 1
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert reason in err.splitlines()[-1], err
+
+
 TINY_EVALUATED_RUN = [
     "--name",
     "tiny",

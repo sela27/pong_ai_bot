@@ -114,6 +114,12 @@ uv run pong evaluate --scripted random
 - `random`: ‏Action אקראית בכל Step, עם seed קבוע.
 - `edge-predictor`: מחשב לאן הכדור יגיע, כולל קפיצה מקיר, ומחזיר אותו מקצה ה-Paddle ב-45 מעלות, לצד הרחוק מה-Paddle של ה-Opponent. כשהכדור מתרחק, הוא חוזר למרכז. מחליט כל Step, כמו ה-Agent ([#7](https://github.com/sela27/pong_ai_bot/issues/7)).
 
+```
+uv run pong evaluate --milestone ~/pong_ai_bot_runs/2026-11-27_1430_position-learner_tiny_seed1/milestone_000500000.pt
+```
+
+‏Evaluation של Milestone בדיעבד, אחרי ה-Run, על אותו סט רגיל ([#13](https://github.com/sela27/pong_ai_bot/issues/13)). הפקודה קוראת מקובץ ההגדרות של ה-Run איזה שחקן הוא אימן, טוענת את המשקלים של ה-Milestone לרשת מהסוג שלו, ומשחקת בשחקן החמדן, שבוחר בכל Step את ה-Action עם ה-Q הגבוה ביותר, על ה-CPU. שורת הסיכום אומרת את ה-Step של ה-Milestone, ו-`--output FILE` עובד כמו ב-Scripted player. הפקודה אף פעם לא כותבת ל-`evaluations.jsonl` של ה-Run, וגם מסרבת לקבל אותו ב-`--output`, כדי שלא תשנה את ה-Milestone שה-Run בוחר ([#17](https://github.com/sela27/pong_ai_bot/issues/17)). ל-Milestone של סביבת בדיקה אין Evaluation, כי אין בה ניקוד.
+
 ### לבחור את רוחב ההיסט
 
 ```
