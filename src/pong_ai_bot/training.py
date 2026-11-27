@@ -5,9 +5,11 @@ learns from the Step's transition. The loop never reads the `info`. It knows
 nothing of Pong, and of files only through the Run directory: a Run's loop saves
 its full checkpoints and its Milestones there, and stops at its Budget, or when
 Ctrl+C is pressed. A Run that stopped resumes from its latest full checkpoint, as
-the same Run. The loop writes the Run's graphs too, through the writer it is given.
+the same Run. The loop writes the Run's graphs too, through the writer it is given,
+and evaluates each Milestone with the Evaluation it is given, if any (#17).
 """
 
+import time
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
@@ -19,11 +21,12 @@ import numpy.typing as npt
 from gymnasium import spaces
 
 from pong_ai_bot.ctrl_c import CtrlC, catch_ctrl_c
+from pong_ai_bot.evaluation import Evaluation, EvaluationStopped, SeedSet
 from pong_ai_bot.graphs import ScalarWriter, TrainingGraphs
 from pong_ai_bot.run_settings import RunSettings
 
 if TYPE_CHECKING:
-    from pong_ai_bot.run_directory import RunDirectory
+    from pong_ai_bot.run_directory import RunDirectory, SavedFile
 
 Q_GRAPH_INPUTS = 1_000
 """How many fixed inputs the Q graph averages over (#17)."""
@@ -73,6 +76,18 @@ class Transition(NamedTuple):
     """Whether the Game was cut off in the Step, though it had a future."""
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RunStop:
+    """Where a Run's training stopped."""
+
+    step: int
+    """The Run's Step it stopped at."""
+    by_ctrl_c: bool
+    """Whether Ctrl+C stopped it, before its end, with a full checkpoint at `step`
+    to resume from. Otherwise it reached its Budget, and its last Milestone was
+    evaluated, if it has Evaluations."""
+
+
 class RunLearner(Protocol):
     """What the loop needs of a learner: the real one, or a fake in the tests."""
 
@@ -99,6 +114,17 @@ class RunLearner(Protocol):
 
     def network_state_dict(self) -> dict[str, Any]:
         """The network's weights alone, for a Milestone."""
+        ...
+
+
+class MilestoneEvaluation(Protocol):
+    """What the loop needs of the Evaluation: the real one, of a learning player's
+    Milestones, or a fake in the tests (#17)."""
+
+    def __call__(self, milestone: SavedFile, *, stop: Callable[[], bool]) -> Evaluation:
+        """The Evaluation of `milestone`, the network's weights it holds, on the
+        regular set. Before each of its Steps, `stop` says whether to abandon it
+        there instead, with an EvaluationStopped."""
         ...
 
 
@@ -183,7 +209,8 @@ def train_run(
     *,
     stay_awake: Callable[[], AbstractContextManager[object]],
     writer: ScalarWriter,
-) -> int:
+    evaluation: MilestoneEvaluation | None = None,
+) -> RunStop:
     """Play the new Run `run` against `env`, from Step 0 to its Budget, with
     `learner`, by the Run's settings and from its seed, and write its graphs
     through `writer`.
@@ -199,10 +226,18 @@ def train_run(
     Before Step 0, the Run saves the fixed inputs of its Q graph, from a Game of
     random Actions against `env`.
 
+    With `evaluation`, the Run evaluates each Milestone as it saves it, the
+    training stopped meanwhile. The Evaluation's Steps aren't the Run's: they
+    count in none of its Steps, and the learner neither learns from them nor
+    chooses their Actions. A Run of a test environment has no Evaluation (#17).
+
     One Ctrl+C stops the Run once its Step is over, with a full checkpoint at that
-    Step, unless it has one there already, and no Milestone: the Run isn't over. A
-    second Ctrl+C stops it at once, with a KeyboardInterrupt. It returns the Step
-    the Run stopped at: its Budget, or the Step Ctrl+C was pressed in.
+    Step, unless it has one there already, and no Milestone: the Run isn't over.
+    In an Evaluation, it abandons the Evaluation, which isn't recorded, and stops
+    the Run with a full checkpoint at the Milestone's Step, even at the Budget, so
+    that the Run's resume measures the Milestone. A second Ctrl+C stops it at once,
+    with a KeyboardInterrupt. It says where the Run stopped: at its Budget, or by
+    Ctrl+C.
 
     All along, it holds the request `stay_awake` makes, that Windows doesn't sleep,
     and releases it however the Run ends.
@@ -210,7 +245,6 @@ def train_run(
     with stay_awake(), catch_ctrl_c() as ctrl_c:
         q_graph_inputs = _q_graph_inputs(env, seed=run.seed)
         run.save_q_graph_inputs(q_graph_inputs)
-        run.save_milestone(0, _saving(learner.network_state_dict()))
         return _play_run(
             run,
             env,
@@ -221,6 +255,7 @@ def train_run(
             q_graph_inputs=q_graph_inputs,
             writer=writer,
             ctrl_c=ctrl_c,
+            evaluation=evaluation,
         )
 
 
@@ -231,7 +266,8 @@ def resume_run(
     *,
     stay_awake: Callable[[], AbstractContextManager[object]],
     writer: ScalarWriter,
-) -> int:
+    evaluation: MilestoneEvaluation | None = None,
+) -> RunStop:
     """Resume the Run `run` against `env`, from its latest full checkpoint to its
     Budget, with `learner`, a new one, and write its graphs through `writer`. The
     Run must have a full checkpoint.
@@ -245,8 +281,9 @@ def resume_run(
     filling's Steps count toward the Budget, as at the Run's start (#17). The Q
     graph's inputs are the ones the Run saved.
 
-    It saves its files, and stops at its Budget or by Ctrl+C, holding the request
-    `stay_awake` makes, as `train_run` does, and returns the Step it stopped at.
+    It saves and evaluates its Milestones, and stops at its Budget or by Ctrl+C,
+    holding the request `stay_awake` makes, as `train_run` does, and says where it
+    stopped.
     """
     # Only here: PyTorch takes seconds to import, and the ε schedule doesn't need
     # it.
@@ -265,6 +302,7 @@ def resume_run(
             q_graph_inputs=run.q_graph_inputs(),
             writer=writer,
             ctrl_c=ctrl_c,
+            evaluation=evaluation,
         )
 
 
@@ -296,17 +334,24 @@ def _play_run(
     q_graph_inputs: npt.NDArray[Any],
     writer: ScalarWriter,
     ctrl_c: CtrlC,
-) -> int:
+    evaluation: MilestoneEvaluation | None,
+) -> RunStop:
     """Play the Run `run` against `env` with `learner`, from its Step count `start`
     to its Budget, resumed `resumes` times so far, the first Game reset with
     `seed`, saving its files and writing its graphs, with `q_graph_inputs` the
-    fixed inputs of its Q graph.
+    fixed inputs of its Q graph, and evaluating each Milestone with `evaluation`,
+    if given.
 
-    It stops early, with a full checkpoint, once `ctrl_c` is pressed, and returns
-    the Step it stopped at.
+    It stops early, with a full checkpoint, once `ctrl_c` is pressed, and says
+    where it stopped.
     """
     settings = run.settings
     epsilon = EpsilonSchedule.of_run(settings)
+    graphs = TrainingGraphs(
+        writer,
+        max_q=lambda: float(learner.q_values(q_graph_inputs).max(axis=1).mean()),
+        epsilon=epsilon.at,
+    )
 
     def save_checkpoint(step: int) -> None:
         checkpoint = {
@@ -316,17 +361,54 @@ def _play_run(
         }
         run.save_checkpoint(step, _saving(checkpoint))
 
+    def measure(milestone: SavedFile) -> None:
+        """Evaluate `milestone`, and record its Evaluation, graph it and print its
+        summary line."""
+        if evaluation is None:
+            return
+        started = time.perf_counter()
+        try:
+            result = evaluation(milestone, stop=lambda: ctrl_c.pressed)
+        except EvaluationStopped:
+            # Not recorded, so that the Run's resume measures it (#17).
+            print(
+                "Ctrl+C abandoned the Evaluation of the Milestone at Step "
+                f"{milestone.step:,}: resuming the Run measures it first.",
+                flush=True,
+            )
+            return
+        run.record_evaluation(result, step=milestone.step)
+        graphs.milestone_evaluated(
+            milestone.step, result.summary, seconds=time.perf_counter() - started
+        )
+        print(
+            result.summary_line(seed_set=SeedSet.REGULAR, step=milestone.step),
+            flush=True,
+        )
+
+    def save_milestone(step: int) -> None:
+        measure(run.save_milestone(step, _saving(learner.network_state_dict())))
+
+    def has_a_milestone(step: int) -> bool:
+        return step % settings.milestone_every == 0 or step == settings.budget
+
     def after_step(step: int) -> None:
         if step % settings.checkpoint_every == 0:
             save_checkpoint(step)
-        if step % settings.milestone_every == 0 or step == settings.budget:
-            run.save_milestone(step, _saving(learner.network_state_dict()))
+        if has_a_milestone(step):
+            save_milestone(step)
 
-    graphs = TrainingGraphs(
-        writer,
-        max_q=lambda: float(learner.q_values(q_graph_inputs).max(axis=1).mean()),
-        epsilon=epsilon.at,
-    )
+    # The Milestone of Step 0, and on a resume the one of the checkpoint's Step,
+    # if a stop between the two files left it unsaved: the learner's network is
+    # the checkpoint's, as it was at the Step.
+    if has_a_milestone(start) and start not in {m.step for m in run.milestones()}:
+        run.save_milestone(start, _saving(learner.network_state_dict()))
+    # A Milestone saved and not measured, as when Ctrl+C abandoned its Evaluation,
+    # is measured before the Run goes on (#17).
+    measured = run.evaluations()
+    for milestone in run.milestones():
+        if milestone.step not in measured:
+            measure(milestone)
     graphs.begin(start, resumes=resumes)
     stopped_at = train(
         env,
@@ -339,8 +421,14 @@ def _play_run(
         stop=lambda: ctrl_c.pressed,
         graphs=graphs,
     )
-    # Unless the Step has its checkpoint already, as one of every so many.
+    # Over at its Budget, with its last Milestone measured too. Otherwise Ctrl+C
+    # stopped it, in a Step or in an Evaluation, and it resumes from a full
+    # checkpoint at the Step, unless it has one there already, as one of every so
+    # many.
+    over = stopped_at == settings.budget and (
+        evaluation is None or settings.budget in run.evaluations()
+    )
     checkpointed = {saved.step for saved in run.checkpoints()}
-    if stopped_at < settings.budget and stopped_at not in checkpointed:
+    if not over and stopped_at not in checkpointed:
         save_checkpoint(stopped_at)
-    return stopped_at
+    return RunStop(step=stopped_at, by_ctrl_c=not over)

@@ -1,6 +1,7 @@
 """The `pong` command: one entry point, with a subcommand for each mode."""
 
 import argparse
+import copy
 import secrets
 import sys
 import warnings
@@ -301,8 +302,13 @@ def _resume(args: argparse.Namespace) -> int:
         print(f"Warning: {warning.message}", file=sys.stderr)
     budget = run.settings.budget
     # The Run's end saves a Milestone at its Budget, which may come after its
-    # latest checkpoint.
-    if any(saved.step == budget for saved in run.milestones()):
+    # latest checkpoint, and evaluates it, if the Run has Evaluations. If Ctrl+C
+    # abandoned that Evaluation, the Run resumes from its checkpoint at the Budget
+    # to measure it.
+    evaluated = LEARNING_PLAYERS[run.player].evaluated
+    if any(saved.step == budget for saved in run.milestones()) and (
+        not evaluated or budget in run.evaluations()
+    ):
         print(
             f"The Run reached its Budget, {budget:,} Steps, already: there is "
             "nothing to resume."
@@ -330,6 +336,7 @@ def _train_or_resume(run: RunDirectory, device: torch.device, *, resumed: bool) 
 
     from pong_ai_bot.keep_awake import keep_windows_awake
     from pong_ai_bot.learner import Learner, LearnerSettings
+    from pong_ai_bot.learning_players import milestone_evaluation
     from pong_ai_bot.training import resume_run, train_run
 
     settings = run.settings
@@ -337,12 +344,21 @@ def _train_or_resume(run: RunDirectory, device: torch.device, *, resumed: bool) 
     # The network's first weights come from the Run's seed too. A resumed Run's
     # learner takes on its checkpoint's instead.
     torch.manual_seed(run.seed)
+    network = player.make_network().to(device)
     learner = Learner(
-        player.make_network().to(device),
+        network,
         actions=player.actions,
         stack_length=player.stack_length,
         settings=LearnerSettings.of_run(settings),
         seed=run.seed,
+    )
+    # The Evaluation's network is its own, on the same device: a copy, which
+    # leaves PyTorch's random generator as it was. The training is stopped while
+    # it plays, its 100 Games together on the graphics card (#13).
+    evaluation = (
+        milestone_evaluation(copy.deepcopy(network), player.make_env)
+        if player.evaluated
+        else None
     )
     purge_step = None
     if resumed:
@@ -366,19 +382,20 @@ def _train_or_resume(run: RunDirectory, device: torch.device, *, resumed: bool) 
         # Runs' directory shows every Run. However the Run stops, the writer is
         # closed, with all it was given written.
         with SummaryWriter(log_dir=str(run.path), purge_step=purge_step) as writer:
-            stopped_at = play(
+            stopped = play(
                 run,
                 player.make_env(),
                 learner,
                 stay_awake=keep_windows_awake,
                 writer=writer,
+                evaluation=evaluation,
             )
     except KeyboardInterrupt:
         print("Stopped at once, with no checkpoint of the Step.", file=sys.stderr)
         return _STOPPED_BY_CTRL_C
-    if stopped_at < settings.budget:
+    if stopped.by_ctrl_c:
         print(
-            f"Ctrl+C stopped the Run at Step {stopped_at:,}, with a full checkpoint "
+            f"Ctrl+C stopped the Run at Step {stopped.step:,}, with a full checkpoint "
             "there."
         )
         return _STOPPED_BY_CTRL_C

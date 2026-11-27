@@ -10,7 +10,8 @@ In it, a Run saves its full checkpoints, of which only the latest are kept, and 
 Milestones, kept for good, each a new file named by its Step, such as
 milestone_000500000.pt. What they hold is up to the training loop. The directory
 also keeps the fixed inputs of the Run's Q graph, so that a resumed Run graphs the
-same ones (#17), and records the Run's one Confirmation (#16).
+same ones (#17), and records the Evaluation of each of its Milestones, and its one
+Confirmation (#16).
 """
 
 import json
@@ -23,7 +24,7 @@ from dataclasses import asdict, dataclass, fields
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
 import numpy as np
 import numpy.typing as npt
@@ -37,6 +38,10 @@ RUNS_DIR_VARIABLE = "PONG_AI_BOT_RUNS_DIR"
 
 SETTINGS_FILE = "settings.json"
 """The Run's settings file, in its directory."""
+
+EVALUATIONS_FILE = "evaluations.jsonl"
+"""The Evaluations of the Run's Milestones on the regular set, a line of JSON for
+each, in its directory (#17)."""
 
 CONFIRMATION_FILE = "confirmation.json"
 """The record of the Run's Confirmation, in its directory, once it has had one."""
@@ -146,6 +151,12 @@ def _write_new(path: Path, write: Callable[[BinaryIO], object]) -> None:
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
+
+
+def _evaluation_of(record: dict[str, Any]) -> Evaluation:
+    """The Evaluation of `record`, a line of JSON as `Evaluation.json_line` gives
+    it, read back."""
+    return Evaluation(games=tuple(GameResult(**game) for game in record["games"]))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -351,6 +362,35 @@ class RunDirectory:
             inputs: npt.NDArray[np.generic] = saved["inputs"]
             return inputs
 
+    def record_evaluation(self, evaluation: Evaluation, *, step: int) -> None:
+        """Record `evaluation`, on the regular set, of the Milestone at `step`: add
+        its line, as `Evaluation.json_line` gives it, to the end of the Run's
+        evaluations.jsonl.
+
+        The line is on disk before it returns, so a Milestone recorded as
+        measured stays so after a crash.
+        """
+        line = evaluation.json_line(seed_set=SeedSet.REGULAR, step=step)
+        with (self.path / EVALUATIONS_FILE).open("a", encoding="utf-8") as file:
+            file.write(line + "\n")
+            file.flush()
+            os.fsync(file.fileno())
+
+    def evaluations(self) -> dict[int, Evaluation]:
+        """The Evaluations on the regular set the Run recorded, by the Step of the
+        Milestone each is of: none for a Milestone not measured yet."""
+        path = self.path / EVALUATIONS_FILE
+        if not path.exists():
+            return {}
+        records = [
+            json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+        ]
+        return {
+            record["step"]: _evaluation_of(record)
+            for record in records
+            if record["set"] == SeedSet.REGULAR
+        }
+
     def record_confirmation(self, evaluation: Evaluation, *, step: int) -> None:
         """Record the Run's Confirmation: `evaluation`, on the Confirmation's set,
         of the Milestone at `step`.
@@ -377,12 +417,7 @@ class RunDirectory:
         if not path.exists():
             return None
         record = json.loads(path.read_text(encoding="utf-8"))
-        return Confirmation(
-            step=record["step"],
-            evaluation=Evaluation(
-                games=tuple(GameResult(**game) for game in record["games"])
-            ),
-        )
+        return Confirmation(step=record["step"], evaluation=_evaluation_of(record))
 
     def _save(
         self, kind: Kind, step: int, write: Callable[[BinaryIO], object]

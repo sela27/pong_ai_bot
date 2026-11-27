@@ -14,6 +14,7 @@ import gymnasium as gym
 import numpy as np
 import numpy.typing as npt
 import pytest
+from gymnasium import spaces
 
 from pong_ai_bot.cli import main
 from pong_ai_bot.game import Score
@@ -592,3 +593,162 @@ def same_weights(weights: dict[str, Any], other: dict[str, Any]) -> bool:
     return weights.keys() == other.keys() and all(
         torch.equal(weights[name], other[name]) for name in weights
     )
+
+
+class OneStepPong(gym.Env[npt.NDArray[np.float32], np.int64]):
+    """A fake of Pong for a learning player, whose every Game ends in its first
+    Step: won 21 to 0, with a Reward of +1, if the player moves up, and lost 0 to
+    21, with -1, otherwise. Its input is always 0.
+
+    It presses Ctrl+C, as the developer would, on its `ctrl_c_on`th reset with
+    the regular set's first seed, if set: in that Evaluation of the Run's.
+    """
+
+    ctrl_c_on: int | None = None
+    regular_resets = 0
+
+    def __init__(self) -> None:
+        self.observation_space = spaces.Box(-1.0, 1.0, (1,), np.float32)
+        self.action_space = spaces.Discrete(3)
+
+    def reset(
+        self, *, seed: int | None = None, options: dict[str, Any] | None = None
+    ) -> tuple[npt.NDArray[np.float32], dict[str, Any]]:
+        super().reset(seed=seed)
+        if seed == 1_000_000:
+            OneStepPong.regular_resets += 1
+            if OneStepPong.regular_resets == OneStepPong.ctrl_c_on:
+                handler = signal.getsignal(signal.SIGINT)
+                assert callable(handler)
+                handler(signal.SIGINT, None)
+        return np.zeros(1, np.float32), {"score": Score(left=0, right=0)}
+
+    def step(
+        self, action: int | np.integer[Any]
+    ) -> tuple[npt.NDArray[np.float32], SupportsFloat, bool, bool, dict[str, Any]]:
+        won = action == 0
+        score = Score(left=0, right=21) if won else Score(left=21, right=0)
+        reward = 1.0 if won else -1.0
+        return np.zeros(1, np.float32), reward, True, False, {"score": score}
+
+
+@pytest.fixture
+def fake_pong_player(monkeypatch: pytest.MonkeyPatch) -> str:
+    """The name of a learning player of OneStepPong, whose Runs have Evaluations,
+    as the Position learner's and the Agent's will: `--player fake-pong`."""
+    from torch import nn
+
+    from pong_ai_bot.learning_players import LEARNING_PLAYERS, LearningPlayer
+
+    player = LearningPlayer(
+        make_env=OneStepPong,
+        make_network=lambda: nn.Sequential(nn.Linear(1, 8), nn.ReLU(), nn.Linear(8, 3)),
+        actions=3,
+        stack_length=1,
+        evaluated=True,
+    )
+    monkeypatch.setitem(LEARNING_PLAYERS, "fake-pong", player)
+    monkeypatch.setattr(OneStepPong, "regular_resets", 0)
+    return "fake-pong"
+
+
+TINY_EVALUATED_RUN = [
+    "--name",
+    "tiny",
+    "--seed",
+    "1",
+    "--device",
+    "cpu",
+    "--budget",
+    "30",
+    "--fill-steps",
+    "10",
+    "--replay-buffer-size",
+    "100",
+    "--batch-size",
+    "4",
+    "--checkpoint-every",
+    "5",
+    "--milestone-every",
+    "20",
+]
+"""A Run of 30 Steps, with Milestones at Step 0, 20 and 30, on the CPU."""
+
+
+@pytest.mark.slow
+def test_pong_train_evaluates_each_milestone_on_the_regular_set(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    fake_pong_player: str,
+) -> None:
+    # Slow for the learner's optimizer, as above.
+    monkeypatch.setenv("PONG_AI_BOT_RUNS_DIR", str(tmp_path / "runs"))
+
+    exit_code = main(["train", "--player", fake_pong_player, *TINY_EVALUATED_RUN])
+
+    assert exit_code == 0
+    [path] = (tmp_path / "runs").iterdir()
+    lines = [
+        json.loads(line)
+        for line in (path / "evaluations.jsonl").read_text("utf-8").splitlines()
+    ]
+    assert [(line["step"], line["set"]) for line in lines] == [
+        (0, "regular"),
+        (20, "regular"),
+        (30, "regular"),
+    ]
+    for line in lines:
+        assert [game["seed"] for game in line["games"]] == list(
+            range(1_000_000, 1_000_100)
+        )
+        # Every Game won or lost 21 to 0, as the greedy player moves up or not.
+        assert {abs(game["score_margin"]) for game in line["games"]} == {21}
+    summaries = [
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("Evaluation on")
+    ]
+    assert [summary.split(":")[0] for summary in summaries] == [
+        "Evaluation on the regular set at Step 0",
+        "Evaluation on the regular set at Step 20",
+        "Evaluation on the regular set at Step 30",
+    ]
+
+
+@pytest.mark.slow
+def test_ctrl_c_in_the_run_s_last_evaluation_leaves_it_to_pong_resume(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    fake_pong_player: str,
+) -> None:
+    # Slow for the learner's optimizer, as above. Ctrl+C in the Evaluation at
+    # the Budget, the Run's 3rd.
+    monkeypatch.setenv("PONG_AI_BOT_RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setattr(OneStepPong, "ctrl_c_on", 3)
+
+    exit_code = main(["train", "--player", fake_pong_player, *TINY_EVALUATED_RUN])
+
+    assert exit_code == 130
+    out = capsys.readouterr().out.splitlines()
+    assert out[-2:] == [
+        (
+            "Ctrl+C abandoned the Evaluation of the Milestone at Step 30: resuming "
+            "the Run measures it first."
+        ),
+        "Ctrl+C stopped the Run at Step 30, with a full checkpoint there.",
+    ]
+    [path] = (tmp_path / "runs").iterdir()
+    run = RunDirectory.open(path)
+    assert list(run.evaluations()) == [0, 20]
+    assert run.checkpoints()[-1].step == 30
+    monkeypatch.setattr(OneStepPong, "ctrl_c_on", None)
+
+    exit_code = main(["resume", str(path), "--device", "cpu"])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[-2].startswith("Evaluation on the regular set at Step 30: ")
+    assert out[-1] == "The Run reached its Budget, 30 Steps."
+    assert list(run.evaluations()) == [0, 20, 30]

@@ -13,6 +13,9 @@ written, are the spec's (#17):
   the previous time, and `train/steps_per_second`, every 1,000 Steps that have
   them.
 - `run/resumes`, at the Run's start and at every resume.
+- `eval/mean`, `eval/min` and `eval/cut_off`, the mean and lowest Score margin of
+  a Milestone's Evaluation and how many of its Games were cut off, at the
+  Milestone's Step.
 
 Each is a scalar: no hparams, whose board is broken on Windows, and no histograms,
 gradients or images, until something breaks (#10). They are written through
@@ -24,6 +27,8 @@ import time
 from collections import deque
 from collections.abc import Callable
 from typing import Protocol
+
+from pong_ai_bot.evaluation import Summary
 
 SCALARS_EVERY = 1_000
 """How many Steps between the points of the loss, ε and Steps a second (#17)."""
@@ -114,6 +119,20 @@ class TrainingGraphs:
             self._timed_from_step = step
             self._timed_from = now
         self._write_on_their_steps(step)
+
+    def milestone_evaluated(
+        self, step: int, summary: Summary, *, seconds: float
+    ) -> None:
+        """The Milestone at the Run's Step `step` was evaluated, in `seconds`, with
+        `summary`: write its points, at its Step.
+
+        The training stopped through the Evaluation, so its time doesn't count in
+        the Steps a second.
+        """
+        self._writer.add_scalar("eval/mean", summary.mean, step)
+        self._writer.add_scalar("eval/min", summary.min, step)
+        self._writer.add_scalar("eval/cut_off", summary.cut_off, step)
+        self._timed_from += seconds
 
     def _game_ended(self, step: int) -> None:
         # A Game's Rewards add up to its Score margin: +1 for each Point won,
