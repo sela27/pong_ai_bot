@@ -111,28 +111,26 @@ def test_all_the_games_still_going_are_played_together_until_each_ends() -> None
     assert player.batches == [[1, 2, 3], [1, 3], [1]]
 
 
-class SeedReading(Staying):
-    """A fake player that keeps still, and keeps the seeds in the `info`s of each
-    batch it is given."""
+class InfoReading(Staying):
+    """A fake player that keeps still, and keeps the `info`s of each batch it is
+    given."""
 
     def __init__(self) -> None:
-        self.batches: list[list[int]] = []
+        self.batches: list[list[dict[str, Any]]] = []
 
     def act(
         self,
         observations: npt.NDArray[Any],
         infos: Sequence[dict[str, Any]],
     ) -> list[int]:
-        self.batches.append([info["seed"] for info in infos])
+        self.batches.append(list(infos))
         return super().act(observations, infos)
 
 
-def test_each_games_info_comes_with_its_seed_so_a_player_knows_which_game_is_which() -> (
-    None
-):
-    # A player that keeps something for each Game, as the copy of the Opponent does,
-    # needs to know which Games left the batch.
-    player = SeedReading()
+def test_each_games_info_comes_as_its_environment_gives_it() -> None:
+    # The fake environment's `info` holds only the score, 0 to 0 until the Game's
+    # last Step. The Game's seed is in its result, not its `info`.
+    player = InfoReading()
     make_env = ending_as(
         {
             7: Ending(2, Score(left=21, right=0)),
@@ -143,9 +141,9 @@ def test_each_games_info_comes_with_its_seed_so_a_player_knows_which_game_is_whi
 
     evaluation = evaluate(player, make_env, [7, 8, 9])
 
-    assert player.batches == [[7, 8, 9], [7, 9], [9]]
-    # The score is still read from the environment's own `info`.
-    assert [game.score_margin for game in evaluation.games] == [-21, -21, -21]
+    no_points_yet = {"score": NO_POINTS_YET}
+    assert player.batches == [[no_points_yet] * 3, [no_points_yet] * 2, [no_points_yet]]
+    assert [game.seed for game in evaluation.games] == [7, 8, 9]
 
 
 class TallyEnv(gym.Env[np.int64, int]):

@@ -1,10 +1,11 @@
 """Choosing the Opponent's offset width by a written rule, not by feel (issue #7).
 
-Each of three Scripted players plays an Evaluation on the regular set against an
+Each of the two Scripted players plays an Evaluation on the regular set against an
 Opponent of each of five offset widths. A width passes when the edge predictor's
-mean Score margin is at least +20, the copy of the Opponent's is between -2 and +2,
-and the random player's is below -19. Of the widths that pass, the hardest is
-chosen: the one the edge predictor's mean is lowest at. If none passes, none is.
+mean Score margin is at least +20 and the random player's is below -19. Of the
+widths that pass, the hardest is chosen: the one the edge predictor's mean is
+lowest at, and of widths that tie at it, the widest (issue #62). If none passes,
+none is.
 """
 
 from collections.abc import Callable, Mapping
@@ -32,11 +33,6 @@ class _Condition:
 
 _CONDITIONS = (
     _Condition("random", lambda mean: mean < -19, "random not below -19"),
-    _Condition(
-        "opponent-copy",
-        lambda mean: -2 <= mean <= 2,
-        "opponent-copy outside -2 to +2",
-    ),
     _Condition("edge-predictor", lambda mean: mean >= 20, "edge-predictor below +20"),
 )
 _HARDEST_BY = "edge-predictor"
@@ -108,7 +104,7 @@ class WidthChoice:
             verdict += (
                 " It ties with "
                 + ", ".join(f"{result.width:.0%}" for result in ties)
-                + ", and of the widths that tie, the narrowest is chosen."
+                + ", and of the widths that tie, the widest is chosen."
             )
         lines.append(verdict)
         return "\n".join(lines)
@@ -117,11 +113,14 @@ class WidthChoice:
         return [result for result in self.results if not result.failed]
 
     def _chosen(self) -> WidthResult | None:
-        # Of widths that tie, the first, the narrowest: the rule doesn't say which.
+        # Of widths that tie, the widest: the wider the width, the more sharp balls
+        # the Opponent returns, and it never misses where it aims itself (issue #62).
         passing = self._passing()
         if not passing:
             return None
-        return min(passing, key=lambda result: result.means[_HARDEST_BY])
+        return min(
+            passing, key=lambda result: (result.means[_HARDEST_BY], -result.width)
+        )
 
 
 def choose_width(evaluate_at: EvaluateAt) -> WidthChoice:

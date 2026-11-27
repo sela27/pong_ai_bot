@@ -6,7 +6,6 @@ does, with the same three Actions. They read only each Game's `info`, never its
 Observation.
 """
 
-import dataclasses
 import functools
 from collections.abc import Callable, Iterator, Sequence
 from typing import Any
@@ -23,8 +22,6 @@ from pong_ai_bot.game import (
     PADDLE_HEIGHT,
     PADDLE_THICKNESS,
     Ball,
-    PhysicsState,
-    Side,
 )
 from pong_ai_bot.opponent import DEFAULT_OFFSET_WIDTH, Opponent
 
@@ -46,60 +43,8 @@ class RandomPlayer:
         return self._rng.integers(len(Action), size=len(infos))
 
 
-OPPONENT_COPY_SEED = 1
-"""With a Game's seed, the seed of the generator the copy of the Opponent draws its
-offsets from in that Game. The Game's own generator, from its seed alone, gives
-other numbers."""
-
 _STEP_MOVE = FRAMES_PER_STEP * MAX_PADDLE_MOVE
 """How far holding up or down for a Step moves the Paddle."""
-
-
-class OpponentCopy:
-    """The Opponent's tracking rule on the right, deciding every Step: it shows
-    whether the Game is the same for both sides.
-
-    It keeps the rule, with its offset, for each Game, knowing the Game by the seed
-    in its `info`, and draws that Game's offsets from a generator of its own. Each
-    Step, it asks the rule where it would take the Paddle in the Step's Frames, were
-    the ball to stay where it is, and chooses the Action that ends the Step nearest
-    there: up or down when that is more than half a Step's move away, and otherwise
-    staying.
-    """
-
-    def __init__(self, *, width: float = DEFAULT_OFFSET_WIDTH) -> None:
-        """A copy with the offset width `width`, as the Opponent's: how far from its
-        Paddle's center its offset can be, as a fraction of half the Paddle's
-        height."""
-        self._width = width
-        self._rules: dict[int, Opponent] = {}
-
-    def act(
-        self, observations: npt.NDArray[Any], infos: Sequence[dict[str, Any]]
-    ) -> list[Action]:
-        return [self._decide(info) for info in infos]
-
-    def _decide(self, info: dict[str, Any]) -> Action:
-        seed = info["seed"]
-        if seed not in self._rules:
-            rng = np.random.default_rng([OPPONENT_COPY_SEED, seed])
-            self._rules[seed] = Opponent(rng, width=self._width, side=Side.RIGHT)
-        rule = self._rules[seed]
-        state = PhysicsState(
-            ball=info["ball"],
-            left_paddle=info["left_paddle"],
-            right_paddle=info["right_paddle"],
-            score=info["score"],
-        )
-        paddle = state.right_paddle
-        for _ in range(FRAMES_PER_STEP):
-            paddle += rule.move(dataclasses.replace(state, right_paddle=paddle))
-        wanted = paddle - state.right_paddle
-        if wanted > _STEP_MOVE / 2:
-            return Action.UP
-        if wanted < -_STEP_MOVE / 2:
-            return Action.DOWN
-        return Action.STAY
 
 
 _CONTACT_X = 1.0 - PADDLE_GAP - PADDLE_THICKNESS - BALL_SIZE / 2
@@ -221,15 +166,12 @@ def _clamp_paddle(height: float) -> float:
     return min(max(height, _PADDLE_LOWEST), _PADDLE_HIGHEST)
 
 
-SCRIPTED_PLAYERS: dict[str, Callable[[float], Player]] = {
-    "random": lambda width: RandomPlayer(),
-    "opponent-copy": lambda width: OpponentCopy(width=width),
-    "edge-predictor": lambda width: EdgePredictor(),
+SCRIPTED_PLAYERS: dict[str, Callable[[], Player]] = {
+    "random": RandomPlayer,
+    "edge-predictor": EdgePredictor,
 }
 """Each Scripted player, by the name `pong evaluate` knows it by, with the function
-that makes a new one for an Evaluation against an Opponent of the offset width it
-is given: the copy of the Opponent plays by that width too. A new Scripted player
-is one more line."""
+that makes a new one for an Evaluation. A new Scripted player is one more line."""
 
 
 def evaluate_scripted_player(
@@ -242,7 +184,7 @@ def evaluate_scripted_player(
     (issue #16).
     """
     return evaluate(
-        SCRIPTED_PLAYERS[name](width),
+        SCRIPTED_PLAYERS[name](),
         functools.partial(
             PongEnv, left_player=functools.partial(Opponent, width=width)
         ),
