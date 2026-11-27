@@ -1,0 +1,10 @@
+#!/bin/sh
+# Runs before every commit; if any check fails, the commit is not made.
+# Enable it once per clone with: git config core.hooksPath .githooks
+set -e
+
+# --locked also fails the commit when uv.lock is out of date with pyproject.toml.
+uv run --locked ruff format --check
+uv run --locked ruff check
+uv run --locked mypy
+uv run --locked pytest -q
