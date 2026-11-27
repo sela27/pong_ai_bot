@@ -20,11 +20,15 @@ if TYPE_CHECKING:
 class EpsilonSchedule:
     """How likely the learner is to choose a random Action, by the Run's Step
     counter alone (issue #12): in a straight line from `start` to `end` over the
-    first `decay_steps` Steps, and `end` from then on."""
+    first `decay_steps` Steps, and `end` from then on.
 
-    start: float = 1.0
-    end: float = 0.01
-    decay_steps: int = 1_000_000
+    The three come from the Run's settings `epsilon_start`, `epsilon_end` and
+    `epsilon_decay_steps`, with their defaults there, in RunSettings.
+    """
+
+    start: float
+    end: float
+    decay_steps: int
 
     def at(self, step: int) -> float:
         """ε at the Run's Step `step`, counting from 0."""
@@ -52,7 +56,7 @@ def train(
     learner: Learner,
     *,
     steps: int,
-    epsilon: EpsilonSchedule = EpsilonSchedule(),
+    epsilon: EpsilonSchedule,
     seed: int,
 ) -> None:
     """Play `steps` Steps against `env`, a Game after another, the first reset with

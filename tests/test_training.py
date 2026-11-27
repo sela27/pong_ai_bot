@@ -5,18 +5,17 @@ import pytest
 
 from pong_ai_bot.training import EpsilonSchedule
 
+RUN_EPSILON = EpsilonSchedule(start=1.0, end=0.01, decay_steps=1_000_000)
+"""The schedule of a Run with the default settings."""
+
 
 def test_epsilon_falls_in_a_straight_line_from_1_to_0_01_over_a_million_steps() -> None:
-    epsilon = EpsilonSchedule()
-
-    values = [epsilon.at(step) for step in (0, 50_000, 500_000, 1_000_000)]
+    values = [RUN_EPSILON.at(step) for step in (0, 50_000, 500_000, 1_000_000)]
 
     assert values == pytest.approx([1.0, 0.9505, 0.505, 0.01])
 
 
 def test_epsilon_stays_at_0_01_after_the_first_million_steps() -> None:
-    epsilon = EpsilonSchedule()
-
-    values = [epsilon.at(step) for step in (1_000_001, 10_000_000)]
+    values = [RUN_EPSILON.at(step) for step in (1_000_001, 10_000_000)]
 
     assert values == pytest.approx([0.01, 0.01])

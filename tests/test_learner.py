@@ -38,7 +38,11 @@ def test_a_learner_given_another_learners_state_learns_on_as_the_other_does() ->
     # Each update learns from the latest transition alone, so both learners learn
     # from the same ones, though only the first kept those before.
     settings = LearnerSettings(
-        batch_size=1, learning_rate=0.1, update_every=1, replay_size=1, fill=1
+        batch_size=1,
+        learning_rate=0.1,
+        update_every=1,
+        replay_buffer_size=1,
+        fill_steps=1,
     )
     torch.manual_seed(1)
     network = nn.Linear(1, 2)

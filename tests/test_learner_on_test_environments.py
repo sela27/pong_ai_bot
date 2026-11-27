@@ -39,7 +39,11 @@ def learned_values(env: gym.Env[Any, Any], inputs: list[float]) -> list[float]:
     torch.manual_seed(SEED)
     network = nn.Sequential(nn.Linear(1, 16), nn.ReLU(), nn.Linear(16, 1))
     settings = LearnerSettings(
-        batch_size=8, learning_rate=1e-3, update_every=1, replay_size=100, fill=8
+        batch_size=8,
+        learning_rate=1e-3,
+        update_every=1,
+        replay_buffer_size=100,
+        fill_steps=8,
     )
     learner = Learner(network, actions=1, settings=settings, seed=SEED)
     epsilon = EpsilonSchedule(start=1.0, end=0.01, decay_steps=100)

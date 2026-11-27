@@ -25,18 +25,19 @@ from pong_ai_bot.training import Transition
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class LearnerSettings:
-    """How the learner learns. The defaults are the Run's (issue #12)."""
+    """How the learner learns. Each has the name of the Run's setting it comes
+    from, and its default there, in RunSettings."""
 
-    batch_size: int = 32
+    batch_size: int
     """How many transitions each update of the network learns from."""
-    learning_rate: float = 1e-4
+    learning_rate: float
     """Adam's learning rate, the same throughout. Adam's other settings are
     PyTorch's defaults."""
-    update_every: int = 4
+    update_every: int
     """How many Steps from one update of the network to the next."""
-    replay_size: int = 1_000_000
+    replay_buffer_size: int
     """How many of the latest transitions the learner keeps."""
-    fill: int = 50_000
+    fill_steps: int
     """How many transitions the learner keeps before its first update."""
 
 
@@ -49,7 +50,7 @@ class Learner:
         network: nn.Module,
         *,
         actions: int,
-        settings: LearnerSettings = LearnerSettings(),
+        settings: LearnerSettings,
         seed: int,
     ) -> None:
         """A learner for `network`, whose every input has `actions` Actions. It
@@ -61,7 +62,7 @@ class Learner:
             network.parameters(), lr=settings.learning_rate
         )
         self._rng = np.random.default_rng(seed)
-        self._replay: deque[Transition] = deque(maxlen=settings.replay_size)
+        self._replay: deque[Transition] = deque(maxlen=settings.replay_buffer_size)
         self._steps_given = 0
 
     def choose_action(self, observation: Any, epsilon: float) -> int:
@@ -79,7 +80,7 @@ class Learner:
         self._steps_given += 1
         settings = self._settings
         if (
-            len(self._replay) >= settings.fill
+            len(self._replay) >= settings.fill_steps
             and self._steps_given % settings.update_every == 0
         ):
             self._update()
