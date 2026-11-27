@@ -2,18 +2,21 @@
 
 Each Step, the learner chooses an Action, with ε by the Step counter alone, and
 learns from the Step's transition. The loop never reads the `info`. It knows
-nothing of Pong, of files or of TensorBoard.
+nothing of Pong, and of files only through the Run directory: a Run's loop saves
+its full checkpoints and its Milestones there, and stops at its Budget.
 """
 
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, BinaryIO, NamedTuple, Protocol
 
 import gymnasium as gym
 
+from pong_ai_bot.run_settings import RunSettings
+
 if TYPE_CHECKING:
-    # Only for its type: the learner imports PyTorch, which takes seconds to
-    # import, and the ε schedule doesn't need it.
-    from pong_ai_bot.learner import Learner
+    from pong_ai_bot.run_directory import RunDirectory
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -29,6 +32,15 @@ class EpsilonSchedule:
     start: float
     end: float
     decay_steps: int
+
+    @classmethod
+    def of_run(cls, settings: RunSettings) -> EpsilonSchedule:
+        """The schedule of a Run with `settings`."""
+        return cls(
+            start=settings.epsilon_start,
+            end=settings.epsilon_end,
+            decay_steps=settings.epsilon_decay_steps,
+        )
 
     def at(self, step: int) -> float:
         """ε at the Run's Step `step`, counting from 0."""
@@ -51,16 +63,40 @@ class Transition(NamedTuple):
     """Whether the Game was cut off in the Step, though it had a future."""
 
 
+class RunLearner(Protocol):
+    """What the loop needs of a learner: the real one, or a fake in the tests."""
+
+    def choose_action(self, observation: Any, epsilon: float) -> int:
+        """The Action for `observation`, by `epsilon`."""
+        ...
+
+    def learn(self, transition: Transition) -> None:
+        """Learn from `transition`, the Step just played."""
+        ...
+
+    def state_dict(self) -> dict[str, Any]:
+        """All of the learner's state, for a full checkpoint."""
+        ...
+
+    def network_state_dict(self) -> dict[str, Any]:
+        """The network's weights alone, for a Milestone."""
+        ...
+
+
 def train(
     env: gym.Env[Any, Any],
-    learner: Learner,
+    learner: RunLearner,
     *,
     steps: int,
     epsilon: EpsilonSchedule,
     seed: int,
+    after_step: Callable[[int], None] | None = None,
 ) -> None:
     """Play `steps` Steps against `env`, a Game after another, the first reset with
-    `seed`, with `learner` choosing each Action and learning from each Step."""
+    `seed`, with `learner` choosing each Action and learning from each Step.
+
+    After each Step, `after_step`, if given, gets how many Steps have been played.
+    """
     observation, _ = env.reset(seed=seed)
     for step in range(steps):
         action = learner.choose_action(observation, epsilon.at(step))
@@ -79,3 +115,54 @@ def train(
             observation, _ = env.reset()
         else:
             observation = next_observation
+        if after_step is not None:
+            after_step(step + 1)
+
+
+def train_run(
+    run: RunDirectory,
+    env: gym.Env[Any, Any],
+    learner: RunLearner,
+    *,
+    stay_awake: Callable[[], AbstractContextManager[object]],
+) -> None:
+    """Play the new Run `run` against `env`, from Step 0 to its Budget, with
+    `learner`, by the Run's settings and from its seed.
+
+    The Run saves a Milestone at Step 0, a full checkpoint every so many Steps and
+    a Milestone every so many, as its settings say, and a Milestone at its end. A
+    full checkpoint holds the learner's whole state (its two networks, Adam's
+    state and its random generator's), the Run's Step count, and how many times
+    the Run was resumed, none in a new Run. A Milestone holds the network's
+    weights alone. The learner fills its replay buffer before it learns, and the
+    filling's Steps count toward the Budget like any other.
+
+    All along, it holds the request `stay_awake` makes, that Windows doesn't sleep,
+    and releases it however the Run ends.
+    """
+    # Only here: PyTorch takes seconds to import, and the ε schedule doesn't need
+    # it.
+    import torch
+
+    settings = run.settings
+
+    def saving(state: dict[str, Any]) -> Callable[[BinaryIO], None]:
+        return lambda file: torch.save(state, file)
+
+    def after_step(step: int) -> None:
+        if step % settings.checkpoint_every == 0:
+            checkpoint = {"learner": learner.state_dict(), "step": step, "resumes": 0}
+            run.save_checkpoint(step, saving(checkpoint))
+        if step % settings.milestone_every == 0 or step == settings.budget:
+            run.save_milestone(step, saving(learner.network_state_dict()))
+
+    with stay_awake():
+        run.save_milestone(0, saving(learner.network_state_dict()))
+        train(
+            env,
+            learner,
+            steps=settings.budget,
+            epsilon=EpsilonSchedule.of_run(settings),
+            seed=run.seed,
+            after_step=after_step,
+        )

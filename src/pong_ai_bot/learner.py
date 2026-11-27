@@ -1,12 +1,13 @@
 """The learner: DQN, learning from the Steps of any Gymnasium environment
 (issue #3).
 
-The network comes from outside: from a batch of inputs, it gives each input's Q of
-each Action. The learner chooses Actions by ε, keeps the latest transitions in its
-replay buffer, and updates the network from random batches of them, with Adam and
-the MSE loss. It knows nothing of Pong, of files or of TensorBoard. In an
-Evaluation and in watching, the network plays as the greedy player instead, with
-no randomness.
+The network comes from outside, on the CPU or the graphics card, and the learner
+works where it is: from a batch of inputs, it gives each input's Q of each Action.
+The learner chooses Actions by ε, keeps the latest transitions in its replay buffer,
+and updates the network from random batches of them, with Adam and the loss its
+settings name. It knows nothing of Pong, of files or of TensorBoard. In an
+Evaluation and in watching, the network plays as the greedy player instead, with no
+randomness.
 
 Each update moves the Q of a transition's Action toward its target: its Reward, and
 the discounted value of the Observation after it, unless the Game ended in it. That
@@ -17,7 +18,7 @@ value.
 """
 
 import copy
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -27,6 +28,7 @@ import torch
 from torch import nn
 
 from pong_ai_bot.replay_buffer import ReplayBuffer
+from pong_ai_bot.run_settings import Loss, RunSettings
 from pong_ai_bot.training import Transition
 
 
@@ -38,8 +40,14 @@ class LearnerSettings:
     batch_size: int
     """How many transitions each update of the network learns from."""
     learning_rate: float
-    """Adam's learning rate, the same throughout. Adam's other settings are
-    PyTorch's defaults."""
+    """Adam's learning rate, the same throughout."""
+    adam_eps: float
+    """Adam's eps. Adam's other settings are PyTorch's defaults."""
+    loss: Loss
+    """The loss the network is fitted with."""
+    max_gradient_norm: float | None
+    """The norm the gradients are clipped to before each update, or None for no
+    clipping."""
     update_every: int
     """How many Steps from one update of the network to the next."""
     replay_buffer_size: int
@@ -54,6 +62,23 @@ class LearnerSettings:
     double_dqn: bool
     """Whether the target is Double DQN's: the network chooses the next Action,
     and the target network gives its value."""
+
+    @classmethod
+    def of_run(cls, settings: RunSettings) -> LearnerSettings:
+        """The learner's settings in a Run with `settings`."""
+        return cls(
+            batch_size=settings.batch_size,
+            learning_rate=settings.learning_rate,
+            adam_eps=settings.adam_eps,
+            loss=settings.loss,
+            max_gradient_norm=settings.max_gradient_norm,
+            update_every=settings.update_every,
+            replay_buffer_size=settings.replay_buffer_size,
+            fill_steps=settings.fill_steps,
+            target_copy_every=settings.target_copy_every,
+            discount=settings.discount,
+            double_dqn=settings.double_dqn,
+        )
 
 
 class Learner:
@@ -79,7 +104,7 @@ class Learner:
         self._player = GreedyPlayer(network)
         self._settings = settings
         self._optimizer = torch.optim.Adam(
-            network.parameters(), lr=settings.learning_rate
+            network.parameters(), lr=settings.learning_rate, eps=settings.adam_eps
         )
         self._rng = np.random.default_rng(seed)
         self._replay = ReplayBuffer(
@@ -127,6 +152,11 @@ class Learner:
             }
         )
 
+    def network_state_dict(self) -> dict[str, Any]:
+        """The network's weights now, alone, as a Milestone keeps them: a copy,
+        like `state_dict`."""
+        return copy.deepcopy(self._network.state_dict())
+
     def load_state_dict(self, state: dict[str, Any]) -> None:
         """Take on the state another learner gave, in `state_dict`."""
         self._network.load_state_dict(state["network"])
@@ -144,14 +174,28 @@ class Learner:
             discount=self._settings.discount,
             double_dqn=self._settings.double_dqn,
         )
-        actions = torch.tensor([transition.action for transition in batch])
-        q = self._network(_inputs([transition.observation for transition in batch]))
-        loss = nn.functional.mse_loss(
+        actions = torch.tensor(
+            [transition.action for transition in batch], device=_device(self._network)
+        )
+        q = self._network(
+            _inputs([transition.observation for transition in batch], self._network)
+        )
+        loss = _LOSSES[self._settings.loss](
             q.gather(1, actions[:, None])[:, 0], batch_targets
         )
         self._optimizer.zero_grad()
         loss.backward()
+        if self._settings.max_gradient_norm is not None:
+            nn.utils.clip_grad_norm_(
+                self._network.parameters(), self._settings.max_gradient_norm
+            )
         self._optimizer.step()
+
+
+_LOSSES: dict[Loss, Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] = {
+    Loss.MSE: nn.functional.mse_loss,
+}
+"""Each loss, as a function of the Q-values and their targets."""
 
 
 def targets(
@@ -171,11 +215,14 @@ def targets(
     one of its highest Q, and `target_network` gives that Action's Q. Without it,
     the target network's highest Q.
     """
+    device = _device(network)
     rewards = torch.tensor(
-        [transition.reward for transition in batch], dtype=torch.float32
+        [transition.reward for transition in batch], dtype=torch.float32, device=device
     )
-    ended = torch.tensor([transition.terminated for transition in batch])
-    next_inputs = _inputs([transition.next_observation for transition in batch])
+    ended = torch.tensor([transition.terminated for transition in batch], device=device)
+    next_inputs = _inputs(
+        [transition.next_observation for transition in batch], network
+    )
     with torch.no_grad():
         next_q = target_network(next_inputs)
         if double_dqn:
@@ -205,7 +252,7 @@ class GreedyPlayer:
         """The Q of each Action for each of a batch of Games' Observations, one row
         for each Game, in the batch's order: what `act` chooses from."""
         with torch.no_grad():
-            return self._network(_inputs(observations)).numpy()
+            return self._network(_inputs(observations, self._network)).cpu().numpy()
 
 
 def epsilon_greedy_action(
@@ -225,7 +272,14 @@ def epsilon_greedy_action(
     return int(player.q_values([observation])[0].argmax())
 
 
-def _inputs(observations: npt.ArrayLike) -> torch.Tensor:
-    """The network's input from a batch of Observations: a list of them, or an
-    array with one along each place of its first axis."""
-    return torch.as_tensor(np.asarray(observations), dtype=torch.float32)
+def _inputs(observations: npt.ArrayLike, network: nn.Module) -> torch.Tensor:
+    """`network`'s input from a batch of Observations: a list of them, or an array
+    with one along each place of its first axis."""
+    return torch.as_tensor(
+        np.asarray(observations), dtype=torch.float32, device=_device(network)
+    )
+
+
+def _device(network: nn.Module) -> torch.device:
+    """Where `network` is, the CPU or the graphics card: where its inputs go."""
+    return next(network.parameters()).device

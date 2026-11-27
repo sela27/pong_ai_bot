@@ -53,6 +53,18 @@ uv run pong play
 
 ‏Human נגד ה-Opponent, בחלון: אתה מימין, במקום של ה-Agent, ורואה בדיוק את מה שה-Agent רואה. החצים למעלה ולמטה מזיזים את ה-Paddle, רווח עוצר וממשיך, ו-Esc יוצא.
 
+### לאמן
+
+```
+uv run pong train --player test-env-1 --name tiny --seed 1 --device cpu --budget 1000 --fill-steps 100
+```
+
+‏Run חדש של שחקן לומד, מאפס, ולא מהמשקלים של Run אחר. הפקודה יוצרת תיקיית Run חדשה ב-`~/pong_ai_bot_runs/`, או בתיקייה שהמשתנה `PONG_AI_BOT_RUNS_DIR` מציין, וקובץ ההגדרות שבה רושם את השחקן, השם הקצר, ה-seed וכל ההגדרות, ולא משתנה אחר כך. ה-seed קטן ממיליון ([#13](https://github.com/sela27/pong_ai_bot/issues/13)). כל הגדרה של ה-Run היא אפשרות בשם שלה, למשל `--budget` או `--fill-steps`, ומה שלא משנים נשאר בברירת המחדל מהטבלה ב-[spec](https://github.com/sela27/pong_ai_bot/issues/17). ‏`uv run pong train --help` מראה את כולן.
+
+בהתחלה הפקודה מדפיסה על איזה מכשיר היא רצה, ומסרבת לרוץ על ה-CPU בלי `--device cpu` ([#11](https://github.com/sela27/pong_ai_bot/issues/11)). ה-buffer מתמלא לפני הלמידה, וה-Step-ים של המילוי נספרים ב-Budget ([#14](https://github.com/sela27/pong_ai_bot/issues/14)). ‏checkpoint מלא נכתב כל 50,000 Step-ים, ו-Milestone ב-Step 0, כל 500,000 Step-ים ובסוף ה-Run, שנעצר ב-Budget. בזמן שה-Run רץ, Windows לא נרדם ([#10](https://github.com/sela27/pong_ai_bot/issues/10)).
+
+בינתיים השחקנים היחידים הם של ארבע סביבות הבדיקה, `test-env-1` עד `test-env-4`, כדי שסוכן יוכל להריץ Run-ים זעירים בתיקייה זמנית ([#9](https://github.com/sela27/pong_ai_bot/issues/9)).
+
 ### למדוד
 
 ```
