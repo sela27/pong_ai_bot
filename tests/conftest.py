@@ -1,6 +1,7 @@
 """Fixtures for every test."""
 
 import itertools
+import signal
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,16 @@ def runs(_temporary_runs_directories: Path, monkeypatch: pytest.MonkeyPatch) -> 
     path = _temporary_runs_directories / f"test{next(_test_numbers)}"
     monkeypatch.setenv(RUNS_DIR_VARIABLE, str(path))
     return path
+
+
+@pytest.fixture(autouse=True)
+def _ctrl_c_as_it_was() -> Iterator[None]:
+    """Ctrl+C as it was before each test, after it: a Run, and `pong` stopped
+    before one, leave it ignored, to the process's end, and the tests' process
+    would then ignore the developer's Ctrl+C too."""
+    handler = signal.getsignal(signal.SIGINT)
+    yield
+    signal.signal(signal.SIGINT, handler)
 
 
 @pytest.fixture(autouse=True, scope="session")

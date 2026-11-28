@@ -751,7 +751,6 @@ def test_the_request_to_stay_awake_is_released_when_ctrl_c_stops_the_run(
 def test_ctrl_c_stops_the_run_after_its_step_with_a_full_checkpoint_there() -> None:
     run = new_run(RunSettings(budget=12, checkpoint_every=5, milestone_every=10))
     learner = CtrlCLearner(at=7)
-    handler_before = signal.getsignal(signal.SIGINT)
 
     stopped = train_run(
         run, ConstantRewardEnv(), learner, stay_awake=Awake(), writer=NoGraphs()
@@ -768,8 +767,10 @@ def test_ctrl_c_stops_the_run_after_its_step_with_a_full_checkpoint_there() -> N
     }
     # A stop is not the Run's end, so it saves no Milestone.
     assert [saved.step for saved in run.milestones()] == [0]
-    # Ctrl+C is Python's again once the Run is over.
-    assert signal.getsignal(signal.SIGINT) is handler_before
+    # From then on, to the process's end, Ctrl+C changes nothing: a second press
+    # as `pong` ends, the first's Step over in a moment, would stop it again, with
+    # a traceback. Only an ignored Ctrl+C stays ignored as Python ends.
+    assert signal.getsignal(signal.SIGINT) == signal.SIG_IGN
 
 
 def test_ctrl_c_in_a_step_with_its_checkpoint_saved_already_saves_it_once() -> None:
@@ -796,7 +797,6 @@ def test_ctrl_c_in_a_step_with_its_checkpoint_saved_already_saves_it_once() -> N
 
 def test_a_second_ctrl_c_stops_the_run_at_once_with_no_checkpoint() -> None:
     run = new_run(RunSettings(budget=12, checkpoint_every=5, milestone_every=10))
-    handler_before = signal.getsignal(signal.SIGINT)
 
     # Both in Step 7, before its end.
     with pytest.raises(KeyboardInterrupt):
@@ -809,7 +809,24 @@ def test_a_second_ctrl_c_stops_the_run_at_once_with_no_checkpoint() -> None:
         )
 
     assert [saved.step for saved in run.checkpoints()] == [5]
-    assert signal.getsignal(signal.SIGINT) is handler_before
+    # And a third changes nothing, as `pong` ends.
+    assert signal.getsignal(signal.SIGINT) == signal.SIG_IGN
+
+
+def test_ctrl_c_changes_nothing_after_the_run_s_end_either() -> None:
+    run = new_run(RunSettings(budget=12, checkpoint_every=5, milestone_every=10))
+
+    stopped = train_run(
+        run,
+        ConstantRewardEnv(),
+        CountingLearner(),
+        stay_awake=Awake(),
+        writer=NoGraphs(),
+    )
+
+    # At its Budget: a press as `pong` ends changes nothing, as after a stop.
+    assert stopped == RunStop(step=12, by_ctrl_c=False)
+    assert signal.getsignal(signal.SIGINT) == signal.SIG_IGN
 
 
 def test_a_new_run_saves_1000_inputs_for_its_q_graph_as_its_games_give_them() -> None:

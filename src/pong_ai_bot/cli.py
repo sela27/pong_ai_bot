@@ -2,15 +2,19 @@
 
 import argparse
 import copy
+import importlib
 import secrets
 import sys
 import warnings
 from collections.abc import Callable, Mapping
-from dataclasses import fields
+from dataclasses import dataclass, fields
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+import gymnasium as gym
+
+from pong_ai_bot.ctrl_c import stop_at_once_on_ctrl_c
 from pong_ai_bot.environment import PongEnv
 from pong_ai_bot.evaluation import Evaluation, SeedSet
 from pong_ai_bot.learning_players import (
@@ -45,6 +49,7 @@ if TYPE_CHECKING:
     from torch import nn
 
     from pong_ai_bot.evaluation import EnvMaker
+    from pong_ai_bot.learner import Learner
     from pong_ai_bot.training import MilestoneEvaluation
 
 MilestoneEvaluationMaker = Callable[["nn.Module", "EnvMaker"], "MilestoneEvaluation"]
@@ -192,18 +197,16 @@ def main(
             return _evaluate(args, learning_players=learning_players, pong=pong)
         elif args.command == "choose-width":
             return _choose_width(pong=pong)
-        elif args.command == "train":
-            return _train(
-                args,
-                learning_players=learning_players,
-                make_milestone_evaluation=make_milestone_evaluation,
-            )
-        elif args.command == "resume":
-            return _resume(
-                args,
-                learning_players=learning_players,
-                make_milestone_evaluation=make_milestone_evaluation,
-            )
+        elif args.command in {"train", "resume"}:
+            command = _train if args.command == "train" else _resume
+            # Until the Run catches Ctrl+C, in the seconds of its setup. From
+            # then on, Ctrl+C is the Run's.
+            with stop_at_once_on_ctrl_c():
+                return command(
+                    args,
+                    learning_players=learning_players,
+                    make_milestone_evaluation=make_milestone_evaluation,
+                )
     except _Refused as refusal:
         print(refusal, file=sys.stderr)
         return 1
@@ -357,8 +360,9 @@ def _shown(default: object) -> str:
 
 
 _STOPPED_BY_CTRL_C = 130
-"""`pong train`'s exit code when Ctrl+C stopped the Run, as is usual for a program
-stopped by Ctrl+C: 128 and SIGINT's number, 2."""
+"""`pong train`'s and `pong resume`'s exit code when Ctrl+C stopped them, in the
+Run or in its setup, as is usual for a program stopped by Ctrl+C: 128 and SIGINT's
+number, 2."""
 
 
 def _training_device(name: str) -> torch.device:
@@ -387,28 +391,36 @@ def _train(
     learning_players: Mapping[str, LearningPlayer],
     make_milestone_evaluation: MilestoneEvaluationMaker,
 ) -> int:
-    device = _training_device(args.device)
-    settings = RunSettings(
-        **{
-            field.name: getattr(args, field.name)
-            for field in fields(RunSettings)
-            if hasattr(args, field.name)
-        }
-    )
     try:
+        device = _training_device(args.device)
+        settings = RunSettings(
+            **{
+                field.name: getattr(args, field.name)
+                for field in fields(RunSettings)
+                if hasattr(args, field.name)
+            }
+        )
+        try:
+            RunDirectory.check_new(player=args.player, name=args.name, seed=args.seed)
+        except InvalidRunError as error:
+            raise _Refused(str(error)) from None
+        setup = _set_up(
+            learning_players[args.player],
+            settings=settings,
+            seed=args.seed,
+            device=device,
+            make_milestone_evaluation=make_milestone_evaluation,
+        )
+        # Only once the setup is over, so that Ctrl+C or a crash in it leaves no
+        # Run's directory, which no Run could resume from.
         run = RunDirectory.create(
             player=args.player, name=args.name, seed=args.seed, settings=settings
         )
-    except InvalidRunError as error:
-        raise _Refused(str(error)) from None
-    print(f"The Run's directory: {run.path}", flush=True)
-    return _train_or_resume(
-        run,
-        device,
-        resumed=False,
-        player=learning_players[run.player],
-        make_milestone_evaluation=make_milestone_evaluation,
-    )
+        print(f"The Run's directory: {run.path}", flush=True)
+    except KeyboardInterrupt:
+        print("Ctrl+C stopped pong train before the Run's first Step.", file=sys.stderr)
+        return _STOPPED_BY_CTRL_C
+    return _play(run, setup, resumed=False)
 
 
 def _resume(
@@ -417,30 +429,44 @@ def _resume(
     learning_players: Mapping[str, LearningPlayer],
     make_milestone_evaluation: MilestoneEvaluationMaker,
 ) -> int:
-    device = _training_device(args.device)
-    run = _open_run(args.run)
-    player = learning_players[run.player]
     try:
-        check_not_over(run, evaluated=player.evaluated)
+        device = _training_device(args.device)
+        run = _open_run(args.run)
+        player = learning_players[run.player]
+        if not _has_steps_left(run, evaluated=player.evaluated):
+            return 0
+        setup = _set_up(
+            player,
+            settings=run.settings,
+            seed=run.seed,
+            device=device,
+            make_milestone_evaluation=make_milestone_evaluation,
+        )
+    except KeyboardInterrupt:
+        print("Ctrl+C stopped pong resume before the Run went on.", file=sys.stderr)
+        return _STOPPED_BY_CTRL_C
+    return _play(run, setup, resumed=True)
+
+
+def _has_steps_left(run: RunDirectory, *, evaluated: bool) -> bool:
+    """Whether `pong resume` has anything left to play of the Run `run`, of
+    Evaluations if `evaluated`: if not, it says why, as when the Run reached its
+    Budget. If it can't resume the Run, it is _Refused."""
+    try:
+        check_not_over(run, evaluated=evaluated)
     except ConfirmedRunError as error:
         raise _Refused(str(error)) from None
     except RunOverError as error:
         # Over as it should be: nothing went wrong.
         print(error)
-        return 0
+        return False
     if not run.checkpoints():
         raise _Refused(
             "The Run has no full checkpoint to resume from: it saves its first at "
             f"Step {run.settings.checkpoint_every:,}, or when Ctrl+C stops it. "
             "Start a new Run instead."
         )
-    return _train_or_resume(
-        run,
-        device,
-        resumed=True,
-        player=player,
-        make_milestone_evaluation=make_milestone_evaluation,
-    )
+    return True
 
 
 def _open_run(path: Path) -> RunDirectory:
@@ -460,37 +486,46 @@ def _open_run(path: Path) -> RunDirectory:
     return run
 
 
-def _train_or_resume(
-    run: RunDirectory,
-    device: torch.device,
-    *,
-    resumed: bool,
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _RunSetup:
+    """What a Run plays with, made in its setup, before its first Step."""
+
+    env: gym.Env[Any, Any]
+    """The environment of the Run's player, wrapped as it sees it."""
+    learner: Learner
+    """A new learner of the Run's player."""
+    evaluation: MilestoneEvaluation | None
+    """The Evaluation of the Run's Milestones, if it has Evaluations."""
+
+
+def _set_up(
     player: LearningPlayer,
+    *,
+    settings: RunSettings,
+    seed: int,
+    device: torch.device,
     make_milestone_evaluation: MilestoneEvaluationMaker,
-) -> int:
-    """Train the Run `run` on `device`, a new one or, if `resumed`, one resumed
-    from its latest full checkpoint, with a new learner of its player, `player`,
+) -> _RunSetup:
+    """The setup of a Run of `player`, with `settings` and `seed`, on `device`,
     evaluated by the Evaluation `make_milestone_evaluation` makes if it has
-    Evaluations, and say how it stopped."""
+    Evaluations: what takes seconds before the Run's first Step, about 5 for
+    making Adam alone."""
     # Only here: PyTorch takes seconds to import, and the other commands don't
     # need it.
     import torch
-    from torch.utils.tensorboard import SummaryWriter
 
-    from pong_ai_bot.keep_awake import keep_windows_awake
     from pong_ai_bot.learner import Learner, LearnerSettings
 
-    settings = run.settings
     # The network's first weights come from the Run's seed too. A resumed Run's
     # learner takes on its checkpoint's instead.
-    torch.manual_seed(run.seed)
+    torch.manual_seed(seed)
     network = player.make_network().to(device)
     learner = Learner(
         network,
         actions=player.actions,
         stack_length=player.stack_length,
         settings=LearnerSettings.of_run(settings),
-        seed=run.seed,
+        seed=seed,
     )
     # The Evaluation's network is its own, on the same device: a copy, which
     # leaves PyTorch's random generator as it was. The training is stopped while
@@ -500,6 +535,21 @@ def _train_or_resume(
         if player.evaluated
         else None
     )
+    # The graphs' writer is made in the Run's directory, after the setup, but its
+    # module takes seconds to import too: here.
+    importlib.import_module("torch.utils.tensorboard")
+    return _RunSetup(env=player.make_env(), learner=learner, evaluation=evaluation)
+
+
+def _play(run: RunDirectory, setup: _RunSetup, *, resumed: bool) -> int:
+    """Train the Run `run`, a new one or, if `resumed`, one resumed from its
+    latest full checkpoint, with what its setup, `setup`, made, and say how it
+    stopped."""
+    from torch.utils.tensorboard import SummaryWriter
+
+    from pong_ai_bot.keep_awake import keep_windows_awake
+
+    settings = run.settings
     purge_step = None
     if resumed:
         step = run.checkpoints()[-1].step
@@ -520,11 +570,11 @@ def _train_or_resume(
         with SummaryWriter(log_dir=str(run.path), purge_step=purge_step) as writer:
             stopped = play(
                 run,
-                player.make_env(),
-                learner,
+                setup.env,
+                setup.learner,
                 stay_awake=keep_windows_awake,
                 writer=writer,
-                evaluation=evaluation,
+                evaluation=setup.evaluation,
             )
     except KeyboardInterrupt:
         print("Stopped at once, with no checkpoint of the Step.", file=sys.stderr)
